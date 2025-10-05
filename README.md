@@ -1,16 +1,19 @@
-# Meilisearch Crawler for KidSearch
+# KidSearch Crawler v2.0
 
-This project is a flexible web crawler designed to populate a Meilisearch instance with content from various websites. It serves as a companion for the [KidSearch](https://github.com/laurentftech/kidsearch) project, a safe search engine for children.
+This project is a high-performance, asynchronous web crawler designed to populate a Meilisearch instance with content from various websites. It serves as a companion for the [KidSearch](https://github.com/laurentftech/kidsearch) project, a safe search engine for children.
 
 The crawler is configurable via a simple YAML file (`sites.yml`) and supports both HTML pages and JSON APIs as data sources.
 
 ## Features
 
+- **Asynchronous & Parallel**: Built with `asyncio` and `aiohttp` for high-speed, concurrent crawling.
 - **Multi-site Crawling**: Crawl several websites defined in `sites.yml`.
 - **Flexible Sources**: Supports both standard HTML websites and JSON APIs.
 - **Incremental Indexing**: Uses a local cache to only re-index pages that have changed since the last crawl, saving time and resources.
 - **Smart Content Extraction**: Intelligently attempts to find and clean the main content of a webpage, removing headers, footers, and sidebars.
-- **Easy Configuration**: All settings are managed through a `sites.yml` file and a `.env` file for credentials.
+- **Respects `robots.txt`**: Follows the standard exclusion protocol defined by websites to be a good web citizen.
+- **Advanced CLI**: Powerful command-line options to force re-crawling, target specific sites, clear the cache, and more.
+- **Easy Configuration**: All settings are managed through a `sites.yml` file and a `.env` file for credentials, including concurrency settings.
 
 ## Prerequisites
 
@@ -67,8 +70,26 @@ This crawler needs a Meilisearch instance to send its data to. The easiest way t
 
 Simply run the `crawler.py` script:
 
-```bash
-python crawler.py
+```sh
+python crawler.py # Runs an incremental crawl on all sites
+```
+
+### Command-Line Options
+
+The crawler offers several options to customize its behavior:
+
+-   `--force`: Forces a full re-crawl of all pages, ignoring the cache.
+-   `--site "Site Name"`: Crawls only the specified site.
+-   `--workers N`: Sets the number of parallel requests (e.g., `--workers 10`).
+-   `--verbose`: Enables detailed debug logging.
+-   `--clear-cache`: Deletes the cache file before starting.
+-   `--stats-only`: Displays cache statistics without running a crawl.
+
+**Example:**
+
+```sh
+# Force a re-crawl of "BBC Bitesize" with 10 parallel workers
+python crawler.py --force --site "BBC Bitesize" --workers 10
 ```
 
 The crawler will start, read your `sites.yml` configuration, and begin indexing content into your Meilisearch instance under the `kidsearch` index.
@@ -88,9 +109,11 @@ The `sites.yml` file allows you to define a list of sites to crawl. Each site is
 - `name`: (String) The name of the site, used for filtering in Meilisearch.
 - `crawl`: (String) The starting URL for the crawl.
 - `type`: (String) The type of content. Can be `html` or `json`.
+- `delay`: (Float) Minimum delay in seconds between requests for this site. Overrides `robots.txt` if higher.
 - `max_pages`: (Integer) The maximum number of pages to crawl for this site.
 - `depth`: (Integer) The maximum depth to follow links from the starting URL. A depth of `1` will only crawl the starting page. A depth of `2` will also crawl the pages linked from it.
-- `exclude`: (List of strings) A list of URL patterns to exclude from the crawl. Any URL containing one of these strings will be ignored.
+- `exclude`: (List of strings) A list of URL patterns to completely ignore. Any URL matching one of these patterns will not be visited. This applies to both HTML pages and items from JSON sources.
+- `no_index`: (List of strings) A list of URL patterns to visit for link discovery but not to index. This is useful for sitemap pages or category indexes whose content is not valuable for search results.
 
 ### JSON Type Specific Configuration
 

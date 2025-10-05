@@ -1,9 +1,9 @@
 sites:
-  - name: BBC Bitesize
-    crawl: https://www.bbc.co.uk/bitesize/levels/zbr9wmn
-    type: html
-    max_pages: 200
-    depth: 2
+    - name: BBC Bitesize
+      crawl: https://www.bbc.co.uk/bitesize/levels/zbr9wmn
+      delay: 0.5
+      max_pages: 200
+      depth: 2
     exclude:
       - "/contact"
       - "/using-the-bbc"
@@ -24,7 +24,7 @@ sites:
        id: key
        title: title
        # On construit l'URL complète à partir de la clé de l'œuvre
-       url: "https://openlibrary.org{{key}}"
+       url: "https://openlibrary.org/{{key}}"
        content: authors[].name, subject[]
        # On construit l'URL de la couverture à partir de son ID
        image: "https://covers.openlibrary.org/b/id/{{cover_id}}-L.jpg"

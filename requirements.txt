@@ -4,3 +4,4 @@ meilisearch
 PyYAML
 python-dotenv
 requests
+aiohttp
