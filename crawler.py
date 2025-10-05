@@ -520,15 +520,6 @@ def crawl_site_html(site):
             if depth > 1:
                 for link in soup.find_all("a", href=True):
                     href = link.get('href')
-                    logger.debug(f"Skipped (content too short): {url}")
-                else:
-                    pages_skipped += 1
-                    logger.debug(f"Skipped (cached): {url}")
-
-            # IMPORTANT : Extraire les liens MÊME SI LA PAGE EST EN CACHE
-            if depth > 1:
-                for link in soup.find_all("a", href=True):
-                    href = link.get('href')
                     if href:
                         # Normaliser l'URL pour supprimer les fragments (#)
                         full_url = normalize_url(urljoin(url, href))
