@@ -73,6 +73,14 @@ python crawler.py
 
 The crawler will start, read your `sites.yml` configuration, and begin indexing content into your Meilisearch instance under the `kidsearch` index.
 
+## Running Tests
+
+To run the test suite, first install the development dependencies:
+
+```bash
+pip install pytest
+```
+
 ## Configuration of `sites.yml`
 
 The `sites.yml` file allows you to define a list of sites to crawl. Each site is an object with the following properties:
