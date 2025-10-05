@@ -100,8 +100,10 @@ If `type` is `json`, you must also provide a `json` object with the following ma
 - `id`: The key for the unique identifier of each item.
 - `title`: The key for the item's title.
 - `url`: The key for the item's URL.
+-   **URL Templating**: You can construct URLs using values from the JSON object. Use `{{key_name}}` to substitute a value. For example: `"https://example.com/books/{{id}}"`.
 - `content`: A comma-separated list of keys for the content. You can use `[]` to access all items in a list (e.g., `authors[].name`).
 - `image`: The key for the item's main image URL.
+-   **Image URL Templating**: This also supports templating like the `url` field. For example: `"https://covers.example.com/{{cover_id}}.jpg"`.
 
 ## Contributing
 

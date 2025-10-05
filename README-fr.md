@@ -100,8 +100,10 @@ Si `type` est `json`, vous devez également fournir un objet `json` avec le mapp
 - `id` : La clé de l'identifiant unique de chaque élément.
 - `title` : La clé du titre de l'élément.
 - `url` : La clé de l'URL de l'élément.
+-   **URL par template** : Vous pouvez construire des URL en utilisant des valeurs de l'objet JSON. Utilisez `{{nom_de_la_cle}}` pour substituer une valeur. Par exemple : `"https://exemple.com/livres/{{id}}"`.
 - `content` : Une liste de clés séparées par des virgules pour le contenu. Vous pouvez utiliser `[]` pour accéder à tous les éléments d'une liste (par exemple, `authors[].name`).
 - `image` : La clé de l'URL de l'image principale de l'élément.
+-   **URL d'image par template** : Ceci supporte également les templates, comme le champ `url`. Par exemple : `"https://covers.exemple.com/{{cover_id}}.jpg"`.
 
 ## Contribuer
 

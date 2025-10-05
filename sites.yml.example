@@ -11,16 +11,20 @@ sites:
       - "/terms"
       - "/cookies"
       - "/legal"
+    # Visiter ces pages pour les liens, mais ne pas les indexer
+    no_index:
+      - "/sitemap"
 
-  - name: Gutenberg
-    crawl: https://gutendex.com/books?topic=children
-    type: json
-    max_pages: 200
-    depth: 2
-    json:
-      root: results
-      id: id
-      title: title
-      url: formats.text/html
-      content: authors[].name, subjects[]
-      image: formats.image/jpeg
+   - name: Open Library (Livres pour enfants)
+     crawl: https://openlibrary.org/subjects/children.json?limit=50
+     type: json
+     json:
+       root: works
+       # 'key' est l'identifiant unique de l'œuvre chez Open Library
+       id: key
+       title: title
+       # On construit l'URL complète à partir de la clé de l'œuvre
+       url: "https://openlibrary.org{{key}}"
+       content: authors[].name, subject[]
+       # On construit l'URL de la couverture à partir de son ID
+       image: "https://covers.openlibrary.org/b/id/{{cover_id}}-L.jpg"

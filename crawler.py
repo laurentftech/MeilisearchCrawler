@@ -9,6 +9,7 @@ from meilisearch import Client
 import logging
 from urllib.parse import urljoin, urlparse
 import hashlib
+from urllib.robotparser import RobotFileParser
 import json
 import os
 import re
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------
 load_dotenv()
 
+USER_AGENT = 'Mozilla/5.0 (compatible; KidSearch-Crawler/1.0)'
 # ---------------------------
 # Config MeiliSearch
 # ---------------------------
@@ -170,6 +172,81 @@ def update_cache(cache, url, content_hash, doc_id):
         'crawl_date': datetime.now().isoformat()
     }
 
+# ---------------------------
+# Gestion de robots.txt
+# ---------------------------
+robot_parsers = {}
+
+def get_robot_parser(url):
+    """Récupère et met en cache l'analyseur robots.txt pour un domaine donné."""
+    parsed_url = urlparse(url)
+    domain = parsed_url.netloc
+    if domain in robot_parsers:
+        return robot_parsers[domain]
+
+    robots_url = f"{parsed_url.scheme}://{domain}/robots.txt"
+    logger.info(f"🤖 Fetching robots.txt for {domain} from {robots_url}")
+    parser = RobotFileParser()
+    parser.set_url(robots_url)
+    parser.read()
+    robot_parsers[domain] = parser
+    return parser
+
+
+# ---------------------------
+# Fonctions Utilitaires améliorées
+# ---------------------------
+MAX_RETRIES = 3
+
+def fetch_with_retry(url, headers, timeout=15):
+    """Effectue une requête GET avec plusieurs tentatives en cas d'échec."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.get(url, timeout=timeout, headers=headers)
+            response.raise_for_status()  # Lève une exception pour les codes 4xx/5xx
+            return response
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"⚠️ Tentative {attempt + 1}/{MAX_RETRIES} échouée pour {url}: {e}")
+            if attempt + 1 == MAX_RETRIES:
+                logger.error(f"❌ Toutes les tentatives ont échoué pour {url}. Abandon.")
+                return None
+            # Attente exponentielle
+            time.sleep(2 ** attempt)
+    return None
+
+
+def get_nested_value(data, key_path):
+    """
+    Récupère une valeur dans un dictionnaire/liste via un chemin de clés (ex: 'a.b[].c').
+    """
+    if not isinstance(data, (dict, list)) or not key_path:
+        return None
+
+    keys = key_path.replace('[]', '.[]').split('.')
+    current = data
+    for i, key in enumerate(keys):
+        if current is None:
+            return None
+
+        # Gestion des listes
+        if key == '[]':
+            if not isinstance(current, list):
+                return None
+            remaining_path = '.'.join(keys[i+1:])
+            if not remaining_path:
+                return current # Si '[]' est à la fin, on retourne la liste
+            
+            # Applique le reste du chemin à chaque élément de la liste
+            results = []
+            for item in current:
+                res = get_nested_value(item, remaining_path)
+                if res:
+                    results.extend(res if isinstance(res, list) else [res])
+            return results
+
+        # Gestion des dictionnaires
+        current = current.get(key) if isinstance(current, dict) else None
+    return current
 
 # ---------------------------
 # Fonctions Utilitaires améliorées
@@ -329,13 +406,14 @@ def extract_images(soup, base_url):
 # ---------------------------
 # Crawl + envoi MeiliSearch
 # ---------------------------
-def crawl_site(site):
+def crawl_site_html(site):
     base_url = site["crawl"].replace("*", "")
     to_visit = [normalize_url(base_url)]
     visited = set()
     max_pages = site.get("max_pages", 200)
     depth = site.get("depth", 3)
     exclude_patterns = site.get("exclude", [])
+    no_index_patterns = site.get("no_index", [])
 
     logger.info(f"Starting crawl for '{site['name']}' -> {base_url}")
 
@@ -344,7 +422,7 @@ def crawl_site(site):
     documents_to_index = []
 
     headers = {
-        'User-Agent': 'Mozilla/5.0 (compatible; KidSearch-Crawler/1.0)',
+        'User-Agent': USER_AGENT,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     }
 
@@ -357,14 +435,16 @@ def crawl_site(site):
         if is_excluded(url, exclude_patterns):
             logger.debug(f"🚫 Excluded URL: {url}")
             continue
+        
+        # Vérifier robots.txt
+        robot_parser = get_robot_parser(url)
+        if not robot_parser.can_fetch(USER_AGENT, url):
+            logger.debug(f"🤖 Denied by robots.txt: {url}")
+            continue
 
         logger.debug(f"Fetching: {url}")
-        try:
-            response = requests.get(url, timeout=10, headers=headers)
-            if response.status_code != 200:
-                continue
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Exception fetching {url}: {e}")
+        response = fetch_with_retry(url, headers)
+        if not response:
             continue
 
         visited.add(url)
@@ -393,7 +473,11 @@ def crawl_site(site):
             doc_id = generate_doc_id(url)
 
             # Vérifier si on doit indexer
-            should_index = not should_skip_page(url, content_hash, cache)
+            # On n'indexe pas si la page est dans no_index
+            is_no_index_page = is_excluded(url, no_index_patterns)
+            
+            # On vérifie le cache seulement si la page n'est pas marquée comme no_index
+            should_index = not is_no_index_page and not should_skip_page(url, content_hash, cache)
 
             if should_index and len(content) >= 50:
                 pages_updated += 1
@@ -421,11 +505,22 @@ def crawl_site(site):
                     save_cache(cache)
             else:
                 if should_index:
-                    # Si c'est la première page du crawl et qu'elle est trop courte, c'est bon à savoir.
+                    # Si la page aurait dû être indexée mais ne l'a pas été
                     if url == base_url:
                         logger.warning(f"⚠️  Skipped entrypoint (content too short, < 50 chars): {url}")
                     else:
                         logger.debug(f"Skipped (content too short): {url}")
+                elif is_no_index_page:
+                    logger.debug(f"🔍 Visited for links but not indexed (no_index rule): {url}")
+                else:
+                    pages_skipped += 1
+                    logger.debug(f"Skipped (cached): {url}")
+
+            # IMPORTANT : Extraire les liens MÊME SI LA PAGE EST EN CACHE ou NO_INDEX
+            if depth > 1:
+                for link in soup.find_all("a", href=True):
+                    href = link.get('href')
+                    logger.debug(f"Skipped (content too short): {url}")
                 else:
                     pages_skipped += 1
                     logger.debug(f"Skipped (cached): {url}")
@@ -458,16 +553,136 @@ def crawl_site(site):
     logger.info(f"   Total pages visited: {pages_crawled}, Indexed: {pages_updated}, Skipped: {pages_skipped}")
 
 
+def crawl_json_api(site):
+    """Crawl une source de données JSON en utilisant la configuration de sites.yml."""
+    base_url = site["crawl"]
+    json_config = site["json"]
+    logger.info(f"Starting JSON crawl for '{site['name']}' -> {base_url}")
+
+    cache = load_cache()
+    pages_updated = 0
+    pages_skipped = 0
+    documents_to_index = []
+
+    # Utiliser les headers par défaut ou ceux spécifiés dans sites.yml
+    default_headers = {
+        'User-Agent': USER_AGENT,
+        'Accept': 'application/json',
+    }
+    custom_headers = site.get('headers', {})
+    headers = {**default_headers, **custom_headers}
+
+    response = fetch_with_retry(base_url, headers=headers)
+    if not response:
+        logger.error(f"Impossible de récupérer les données JSON initiales depuis {base_url}")
+        return
+
+    try:
+        data = response.json()
+        items = get_nested_value(data, json_config['root'])
+
+        if not items:
+            logger.error(f"Impossible de trouver l'élément racine '{json_config['root']}' dans la réponse JSON.")
+            return
+
+        logger.info(f"Trouvé {len(items)} éléments dans la réponse JSON.")
+
+        for item in items:
+            # Gérer les URL qui sont des templates
+            url_template = json_config['url']
+            url = url_template
+            template_keys = re.findall(r"\{\{(.*?)\}\}", url_template)
+            for t_key in template_keys:
+                value = get_nested_value(item, t_key.strip())
+                if value:
+                    url = url.replace(f"{{{{{t_key}}}}}", str(value))
+
+            if not url or "{{" in url:  # Si l'URL est invalide ou le template n'a pas été rempli
+                continue
+
+            # Vérifier robots.txt pour l'URL de l'item JSON
+            robot_parser = get_robot_parser(url)
+            if not robot_parser.can_fetch(USER_AGENT, url):
+                logger.debug(f"🤖 Denied by robots.txt: {url}")
+                continue
+
+            title = get_nested_value(item, json_config['title']) or "Sans titre"
+            doc_id = generate_doc_id(url)
+
+            # Gérer les URL d'images qui sont des templates
+            image_template = json_config.get('image', '')
+            image_url = None
+            if image_template:
+                image_url = image_template
+                img_template_keys = re.findall(r"\{\{(.*?)\}\}", image_template)
+                for t_key in img_template_keys:
+                    value = get_nested_value(item, t_key.strip())
+                    if value:
+                        image_url = image_url.replace(f"{{{{{t_key}}}}}", str(value))
+                if "{{" in image_url: image_url = None # Template non rempli
+
+            images = [{'url': image_url, 'alt': title, 'description': title}] if image_url else []
+
+            content_parts = []
+            for content_key in json_config.get('content', '').split(','):
+                if not content_key.strip(): continue
+                value = get_nested_value(item, content_key.strip())
+                if isinstance(value, list):
+                    content_parts.extend(map(str, value))
+                elif value:
+                    content_parts.append(str(value))
+            
+            content = clean_text(' '.join(content_parts))
+            excerpt = create_excerpt(content)
+
+            content_hash = get_content_hash(content, title, images, excerpt)
+
+            if not should_skip_page(url, content_hash, cache):
+                pages_updated += 1
+                logger.info(f"Indexé ({pages_updated}/{len(items)}): {title}")
+
+                doc = {
+                    "id": doc_id, "site": site["name"], "url": url, "title": title,
+                    "excerpt": excerpt, "content": content, "images": images,
+                    "timestamp": int(time.time()), "last_modified": datetime.now().isoformat()
+                }
+                documents_to_index.append(doc)
+                update_cache(cache, url, content_hash, doc_id)
+
+                if len(documents_to_index) >= 10:
+                    index.add_documents(documents_to_index)
+                    documents_to_index = []
+                    save_cache(cache)
+            else:
+                pages_skipped += 1
+                logger.debug(f"Sauté (cache): {title}")
+            
+            time.sleep(0.1) # Soyons polis avec l'API
+
+    except Exception as e:
+        logger.error(f"Erreur lors du traitement du JSON depuis {base_url}: {e}", exc_info=True)
+
+    if documents_to_index:
+        index.add_documents(documents_to_index)
+    save_cache(cache)
+    logger.info(f"Crawl JSON terminé pour '{site['name']}'.")
+    logger.info(f"   Total d'éléments traités: {len(items)}, Indexés: {pages_updated}, Sautés: {pages_skipped}")
+
+
 # ---------------------------
 # Boucle principale
 # ---------------------------
 if __name__ == "__main__":
     for i, site in enumerate(sites, 1):
         logger.info(f"\n{'=' * 50}")
-        logger.info(f"🌐 [{i}/{len(sites)}] Crawling: {site['name']}")
+        logger.info(f"🌐 [{i}/{len(sites)}] Traitement de: {site['name']} (type: {site.get('type', 'html')})")
         logger.info(f"{'=' * 50}")
         try:
-            crawl_site(site)
+            # Utiliser le champ 'type' pour décider quelle fonction appeler
+            if site.get('type') == 'json':
+                crawl_json_api(site)
+            else:
+                crawl_site_html(site)
         except Exception as e:
             logger.error(f"❌ Error crawling {site['name']}: {e}")
         if i < len(sites):
