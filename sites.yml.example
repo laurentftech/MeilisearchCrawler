@@ -1,0 +1,26 @@
+sites:
+  - name: BBC Bitesize
+    crawl: https://www.bbc.co.uk/bitesize/levels/zbr9wmn
+    type: html
+    max_pages: 200
+    depth: 2
+    exclude:
+      - "/contact"
+      - "/using-the-bbc"
+      - "/privacy"
+      - "/terms"
+      - "/cookies"
+      - "/legal"
+
+  - name: Gutenberg
+    crawl: https://gutendex.com/books?topic=children
+    type: json
+    max_pages: 200
+    depth: 2
+    json:
+      root: results
+      id: id
+      title: title
+      url: formats.text/html
+      content: authors[].name, subjects[]
+      image: formats.image/jpeg

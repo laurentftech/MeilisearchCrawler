@@ -1,0 +1,5 @@
+# Environment variables
+.env
+
+# Crawler sites configuration
+sites.yml
