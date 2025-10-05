@@ -1,8 +1,10 @@
 # Environment variables
 .env
+.idea
 
 # Cache
 crawler_cache.json
 
 # Crawler sites configuration
 sites.yml
+sites-complet.yml
