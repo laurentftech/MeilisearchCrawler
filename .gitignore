@@ -1,5 +1,7 @@
 # Environment variables
 .env
+
+# Cache
 crawler_cache.json
 
 # Crawler sites configuration
