@@ -6,3 +6,4 @@ python-dotenv
 requests
 aiohttp
 tdqm
+trafilatura
