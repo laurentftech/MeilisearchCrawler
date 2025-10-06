@@ -9,6 +9,7 @@ sites:
       - "/using-the-bbc"
       - "/privacy"
       - "/terms"
+      - "/cdn-cgi/l/email-protection"
       - "/cookies"
       - "/legal"
     # Visiter ces pages pour les liens, mais ne pas les indexer
@@ -18,6 +19,7 @@ sites:
    - name: Open Library (Livres pour enfants)
      crawl: https://openlibrary.org/subjects/children.json?limit=50
      type: json
+     lang: en
      json:
        root: works
        # 'key' est l'identifiant unique de l'œuvre chez Open Library

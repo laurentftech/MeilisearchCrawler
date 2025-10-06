@@ -1,5 +1,5 @@
 # ---------------------------
-# KidSearch Crawler v2.0 - Async Edition with tqdm
+# KidSearch Crawler
 # ---------------------------
 import yaml
 import aiohttp
@@ -59,6 +59,16 @@ class Config:
     CONCURRENT_REQUESTS = int(os.getenv('CONCURRENT_REQUESTS', 5))
     MAX_CONNECTIONS = int(os.getenv('MAX_CONNECTIONS', 100))
 
+    GLOBAL_EXCLUDE_PATTERNS = [
+        # Actions utilisateur
+        '/login', '/logout', '/signin', '/signup', '/register',
+        '/cart', '/checkout', '/account',
+        # Actions techniques
+        '/share', '/print', '/cdn-cgi/',
+        # CMS / API
+        '/wp-admin/', '/wp-json/', '?rest_route=',
+    ]
+
 
 config = Config()
 
@@ -86,8 +96,8 @@ def update_meilisearch_settings(index):
     logger.info("⚙️ Mise à jour des paramètres MeiliSearch...")
     settings = {
         'searchableAttributes': ['title', 'excerpt', 'content', 'site', 'images.alt'],
-        'displayedAttributes': ['title', 'url', 'site', 'images', 'timestamp', 'excerpt', 'content'],
-        'filterableAttributes': ['site', 'timestamp'],
+        'displayedAttributes': ['title', 'url', 'site', 'images', 'timestamp', 'excerpt', 'content', 'lang'],
+        'filterableAttributes': ['site', 'timestamp', 'lang'],
         'sortableAttributes': ['timestamp'],
         'rankingRules': ['words', 'typo', 'proximity', 'attribute', 'sort', 'exactness']
     }
@@ -302,7 +312,10 @@ def get_nested_value(data, key_path: str):
                 if res:
                     results.extend(res if isinstance(res, list) else [res])
             return results
-        current = current.get(key) if isinstance(current, dict) else None
+
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
     return current
 
 
@@ -508,6 +521,7 @@ class CrawlStats:
         self.pages_indexed = 0
         self.pages_not_indexed = 0
         self.pages_not_modified = 0  # Nouvelles stats
+        self.discovered_but_not_visited = 0
         self.errors = 0
         self.redirects = 0
         self.lock = asyncio.Lock()
@@ -537,10 +551,29 @@ class CrawlStats:
         logger.info(f"✅ Pages indexées: {self.pages_indexed}")
         logger.info(f"⏭️  Pages non indexées (doublon, cache, etc.): {self.pages_not_indexed}")
         logger.info(f"♻️  Pages non modifiées (304): {self.pages_not_modified}")
+        logger.info(f"🗺️  Liens découverts (non visités): {self.discovered_but_not_visited}")
         logger.info(f"❌ Erreurs: {self.errors}")
         if self.pages_visited > 0:
             logger.info(f"⚡ Vitesse: {self.pages_visited / duration:.2f} pages/s")
         logger.info(f"{'=' * 60}\n")
+
+
+# ---------------------------
+# Contexte de Crawl
+# ---------------------------
+class CrawlContext:
+    """Regroupe tous les paramètres d'une session de crawl."""
+    def __init__(self, site: Dict, force_recrawl: bool, cache: Dict):
+        self.site = site
+        self.force_recrawl = force_recrawl
+        self.cache = cache
+        self.cache_lock = asyncio.Lock()
+        self.processed_hashes: Set[str] = set()
+        self.stats = CrawlStats(site['name'])
+        self.rate_limiter = RateLimiter(get_crawl_delay(site["crawl"]))
+        self.exclude_patterns = config.GLOBAL_EXCLUDE_PATTERNS + site.get("exclude", [])
+        self.no_index_patterns = site.get("no_index", [])
+        self.max_depth = site.get("depth", 3)
 
 
 # ---------------------------
@@ -628,39 +661,31 @@ async def fetch_page(session: ClientSession, url: str, rate_limiter: RateLimiter
 async def process_page(
         session: ClientSession,
         url: str,
-        site: Dict,
-        cache: Dict,
-        stats: CrawlStats,
-        processed_hashes: Set[str],
-        cache_lock: asyncio.Lock,
-        rate_limiter: RateLimiter,
-        force_recrawl: bool,
-        exclude_patterns: List[str],
-        no_index_patterns: List[str],
+        context: CrawlContext,
         current_depth: int = 0
 ) -> Tuple[Optional[Dict], List[Tuple[str, int]]]:
     """Traite une page et retourne le document à indexer + les nouveaux liens avec leur profondeur."""
 
-    result = await fetch_page(session, url, rate_limiter, cache if not force_recrawl else None)
+    result = await fetch_page(session, url, context.rate_limiter, context.cache if not context.force_recrawl else None)
     if not result:
-        await stats.increment('errors')
+        await context.stats.increment('errors')
         return None, []
 
     final_url, html, metadata = result
 
     # Gestion du 304 Not Modified
     if metadata['status'] == 304:
-        await stats.increment('pages_not_modified')
-        await stats.increment('pages_visited')
+        await context.stats.increment('pages_not_modified')
+        await context.stats.increment('pages_visited')
         return None, []
 
     # Gestion du type de contenu non-HTML
     if metadata['status'] == 'skipped_content_type':
-        await stats.increment('pages_visited') # On l'a visitée, mais on ne l'indexe pas
-        await stats.increment('pages_not_indexed')
+        await context.stats.increment('pages_visited') # On l'a visitée, mais on ne l'indexe pas
+        await context.stats.increment('pages_not_indexed')
         return None, []
 
-    await stats.increment('pages_visited')
+    await context.stats.increment('pages_visited')
 
     if final_url != url:
         logger.debug(f"   ↪️ Redirection de {url} vers {final_url}")
@@ -668,7 +693,7 @@ async def process_page(
     try:
         soup = BeautifulSoup(html, "lxml")
         title = get_title(soup)
-        raw_content = extract_main_content(soup, html, site)
+        raw_content = extract_main_content(soup, html, context.site)
         content = clean_text(raw_content)
         excerpt = create_excerpt(content, max_length=250)
         images = extract_images(soup, final_url)
@@ -676,35 +701,42 @@ async def process_page(
         content_hash = get_content_hash(content, title, images, excerpt)
         doc_id = generate_doc_id(final_url)
 
-        is_no_index_page = is_excluded(final_url, no_index_patterns)
-        is_duplicate_content = content_hash in processed_hashes
+        is_no_index_page = is_excluded(final_url, context.no_index_patterns)
+        is_duplicate_content = content_hash in context.processed_hashes
 
         should_index = not is_no_index_page and (
-                force_recrawl or not should_skip_page(final_url, content_hash, cache)
+                context.force_recrawl or not should_skip_page(final_url, content_hash, context.cache)
         ) and not is_duplicate_content
 
         doc = None
         if should_index and len(content) >= 50:
-            await stats.increment('pages_indexed')
-            processed_hashes.add(content_hash)
+            await context.stats.increment('pages_indexed')
+            context.processed_hashes.add(content_hash)
+
+            # Détection de la langue pour le HTML
+            lang = "fr" # Langue par défaut
+            html_tag = soup.find('html')
+            if html_tag and html_tag.get('lang'):
+                lang = html_tag.get('lang').split('-')[0].lower()
 
             doc = {
                 "id": doc_id,
-                "site": site["name"],
+                "site": context.site["name"],
                 "url": final_url,
                 "title": title,
                 "excerpt": excerpt,
                 "content": content,
                 "images": images,
+                "lang": lang,
                 "timestamp": int(time.time()),
                 "last_modified": datetime.now().isoformat()
             }
-            async with cache_lock:
-                update_cache(cache, final_url, content_hash, doc_id, metadata['etag'], metadata['last_modified'])
+            async with context.cache_lock:
+                update_cache(context.cache, final_url, content_hash, doc_id, metadata['etag'], metadata['last_modified'])
                 # Sauvegarde immédiate pour que les autres workers voient le changement
-                save_cache(cache)
+                save_cache(context.cache)
         else:
-            await stats.increment('pages_not_indexed')
+            await context.stats.increment('pages_not_indexed')
 
         # Extraire les liens avec profondeur
         new_links = []
@@ -712,45 +744,34 @@ async def process_page(
             href = link.get('href')
             if href:
                 full_url = normalize_url(urljoin(final_url, href))
-                if is_valid_url(full_url) and is_same_domain(full_url, site["crawl"]):
+                if is_valid_url(full_url) and is_same_domain(full_url, context.site["crawl"]):
                     new_links.append((full_url, current_depth + 1))
 
         return doc, new_links
 
     except Exception as e:
         logger.error(f"❌ Erreur traitement {url}: {e}")
-        await stats.increment('errors')
+        await context.stats.increment('errors')
         return None, []
 
 
-async def crawl_site_html_async(site: Dict, force_recrawl: bool = False):
+async def crawl_site_html_async(context: CrawlContext):
     """Crawl un site HTML de manière asynchrone."""
-    stats = CrawlStats(site['name'])
-    base_url = site["crawl"].replace("*", "")
+    base_url = context.site["crawl"].replace("*", "")
+    max_pages = context.site.get("max_pages", 200)
 
-    max_pages = site.get("max_pages", 200)
-    depth = site.get("depth", 3)
-    delay = get_crawl_delay(base_url)
-    exclude_patterns = site.get("exclude", [])
-    no_index_patterns = site.get("no_index", [])
-
-    logger.info(f"🚀 Démarrage crawl async '{site['name']}' -> {base_url}")
-    logger.info(f"   Paramètres: max={max_pages}, depth={depth}, delay={delay}s, workers={config.CONCURRENT_REQUESTS}")
-
-    cache = load_cache()
+    logger.info(f"🚀 Démarrage crawl async '{context.site['name']}' -> {base_url}")
+    logger.info(f"   Paramètres: max={max_pages}, depth={context.max_depth}, delay={context.rate_limiter.delay:.2f}s, workers={config.CONCURRENT_REQUESTS}")
 
     # Marquer le début du crawl
-    domain = urlparse(base_url).netloc
-    start_crawl_session(cache, site['name'], domain)
+    # NOTE: La session est maintenant démarrée dans main_async
+    # domain = urlparse(base_url).netloc
+    # start_crawl_session(context.cache, context.site['name'], domain)
     documents_to_index = []
 
-    cache_lock = asyncio.Lock()
     to_visit = {normalize_url(base_url)}
     visited: Set[str] = set()
     in_progress: Set[str] = set()
-    processed_hashes: Set[str] = set() # Cache de session pour les hashs de contenu
-
-    rate_limiter = RateLimiter(delay)
 
     timeout = ClientTimeout(total=config.TIMEOUT)
     connector = TCPConnector(limit=config.MAX_CONNECTIONS, limit_per_host=config.CONCURRENT_REQUESTS)
@@ -762,9 +783,9 @@ async def crawl_site_html_async(site: Dict, force_recrawl: bool = False):
     }
 
     # Initialiser la barre de progression
-    stats.pbar = tqdm(
+    context.stats.pbar = tqdm(
         total=max_pages,
-        desc=f"🔍 {site['name']}",
+        desc=f"🔍 {context.site['name']}",
         unit="pages",
         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
     )
@@ -778,7 +799,7 @@ async def crawl_site_html_async(site: Dict, force_recrawl: bool = False):
 
                 if url in visited or url in in_progress:
                     continue
-                if is_excluded(url, exclude_patterns):
+                if is_excluded(url, context.exclude_patterns):
                     continue
 
                 # Vérification rapide de l'extension pour éviter les requêtes inutiles
@@ -802,8 +823,7 @@ async def crawl_site_html_async(site: Dict, force_recrawl: bool = False):
 
             # Traiter le batch en parallèle
             tasks = [
-                process_page(session, url, site, cache, stats, processed_hashes, cache_lock, rate_limiter, force_recrawl, exclude_patterns,
-                             no_index_patterns)
+                process_page(session, url, context)
                 for url in batch
             ]
 
@@ -832,20 +852,22 @@ async def crawl_site_html_async(site: Dict, force_recrawl: bool = False):
 
                 # Ajouter les nouveaux liens
                 for link_url, link_depth in new_links:
-                    # NOTE: link_depth is available if we want to enforce max depth later
-                    if link_depth > depth:
+                    if link_depth > context.max_depth:
                         continue
 
                     if link_url in visited or link_url in in_progress or link_url in to_visit:
                         continue
 
-                    if is_excluded(link_url, exclude_patterns):
+                    if is_excluded(link_url, context.exclude_patterns):
                         continue
 
                     to_visit.add(link_url)
 
     # Fermer la barre de progression
-    stats.pbar.close()
+    context.stats.pbar.close()
+
+    # Mettre à jour le nombre de liens découverts mais non visités
+    context.stats.discovered_but_not_visited = len(to_visit)
 
     # Indexer les documents restants
     if documents_to_index:
@@ -855,43 +877,37 @@ async def crawl_site_html_async(site: Dict, force_recrawl: bool = False):
         except Exception as e:
             logger.error(f"❌ Erreur indexation finale: {e}")
 
-    # Marquer le crawl comme complet
-    complete_crawl_session(cache, site['name'])
-    save_cache(cache)
-    stats.log_summary()
-
-
 # ---------------------------
 # Crawl JSON
 # ---------------------------
-async def crawl_json_api_async(site: Dict, force_recrawl: bool = False):
+async def crawl_json_api_async(context: CrawlContext):
     """Crawl une source JSON (wrapper async pour compatibilité)."""
-    import requests
+    base_url = context.site["crawl"]
+    json_config = context.site["json"]
 
-    stats = CrawlStats(site['name'])
-    base_url = site["crawl"]
-    json_config = site["json"]
+    logger.info(f"🚀 Démarrage crawl JSON '{context.site['name']}' -> {base_url}")
 
-    logger.info(f"🚀 Démarrage crawl JSON '{site['name']}' -> {base_url}")
-
-    cache = load_cache()
-
-    # Marquer le début du crawl
-    domain = urlparse(base_url).netloc
-    start_crawl_session(cache, site['name'], domain)
     documents_to_index = []
 
     headers = {
         'User-Agent': config.USER_AGENT,
         'Accept': 'application/json',
-        **site.get('headers', {})
+        **context.site.get('headers', {})
     }
-    exclude_patterns = site.get("exclude", [])
+
+    # Vérifier robots.txt pour la source JSON
+    robot_parser = get_robot_parser(base_url)
+    if robot_parser and not robot_parser.can_fetch(config.USER_AGENT, base_url):
+        logger.warning(f"🚫 Accès à {base_url} interdit par robots.txt")
+        await context.stats.increment('errors')
+        return
 
     try:
-        response = requests.get(base_url, headers=headers, timeout=config.TIMEOUT)
-        response.raise_for_status()
-        data = response.json()
+        async with aiohttp.ClientSession(headers=headers, timeout=ClientTimeout(total=config.TIMEOUT)) as session:
+            async with session.get(base_url) as response:
+                response.raise_for_status()
+                data = await response.json()
+
         items = get_nested_value(data, json_config['root'])
 
         if not items:
@@ -901,9 +917,9 @@ async def crawl_json_api_async(site: Dict, force_recrawl: bool = False):
         logger.info(f"📦 {len(items)} éléments trouvés")
 
         # Initialiser la barre de progression pour JSON
-        pbar = tqdm_sync(
+        context.stats.pbar = tqdm_sync(
             total=len(items),
-            desc=f"🔍 {site['name']}",
+            desc=f"🔍 {context.site['name']}",
             unit="items",
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
         )
@@ -920,16 +936,16 @@ async def crawl_json_api_async(site: Dict, force_recrawl: bool = False):
                         url = url.replace(f"{{{{{t_key}}}}}", str(value))
 
                 if not url or "{{" in url or not is_valid_url(url):
-                    pbar.update(1)
+                    context.stats.pbar.update(1)
                     continue
 
-                if is_excluded(url, exclude_patterns):
-                    pbar.update(1)
+                if is_excluded(url, context.exclude_patterns):
+                    context.stats.pbar.update(1)
                     continue
 
-                stats.pages_visited += 1
+                await context.stats.increment('pages_visited')
 
-                title = get_nested_value(item, json_config['title']) or "Sans titre"
+                title = str(get_nested_value(item, json_config['title']) or "Sans titre")
                 doc_id = generate_doc_id(url)
 
                 image_template = json_config.get('image', '')
@@ -960,65 +976,63 @@ async def crawl_json_api_async(site: Dict, force_recrawl: bool = False):
                 excerpt = create_excerpt(content)
 
                 content_hash = get_content_hash(content, title, images, excerpt)
-                should_index = force_recrawl or not should_skip_page(url, content_hash, cache)
+                should_index = context.force_recrawl or not should_skip_page(url, content_hash, context.cache)
 
                 if should_index:
-                    stats.pages_indexed += 1
+                    await context.stats.increment('pages_indexed')
 
                     doc = {
                         "id": doc_id,
-                        "site": site["name"],
+                        "site": context.site["name"],
                         "url": url,
                         "title": title,
                         "excerpt": excerpt,
                         "content": content,
                         "images": images,
+                        "lang": context.site.get("lang", "fr"), # Utiliser la langue du site ou 'fr' par défaut
                         "timestamp": int(time.time()),
                         "last_modified": datetime.now().isoformat()
                     }
 
                     documents_to_index.append(doc)
-                    update_cache(cache, url, content_hash, doc_id)
+                    update_cache(context.cache, url, content_hash, doc_id)
 
                     if len(documents_to_index) >= config.BATCH_SIZE:
                         try:
                             index.add_documents(documents_to_index)
                         except Exception as e:
                             logger.error(f"❌ Erreur indexation batch: {e}")
-                            stats.errors += 1
+                            await context.stats.increment('errors')
                         documents_to_index = []
-                        save_cache(cache)
+                        save_cache(context.cache)
                 else:
-                    stats.pages_not_indexed += 1
+                    await context.stats.increment('pages_not_indexed')
                 
                 # Mettre à jour la barre de progression
-                pbar.update(1)
-                pbar.set_postfix({
-                    'indexées': stats.pages_indexed,
-                    'non-indexées': stats.pages_not_indexed,
-                    'erreurs': stats.errors
+                context.stats.pbar.update(1)
+                context.stats.pbar.set_postfix({
+                    'indexées': context.stats.pages_indexed,
+                    'non-indexées': context.stats.pages_not_indexed,
+                    'erreurs': context.stats.errors
                 })
 
             except Exception as e:
                 logger.error(f"❌ Erreur traitement item JSON: {e}")
-                stats.errors += 1
-                pbar.update(1)
+                await context.stats.increment('errors')
+                context.stats.pbar.update(1)
 
-        pbar.close()
+        context.stats.pbar.close()
 
         if documents_to_index:
             try:
                 index.add_documents(documents_to_index)
             except Exception as e:
                 logger.error(f"❌ Erreur indexation finale: {e}")
-
-        # Marquer le crawl comme complet
-        complete_crawl_session(cache, site['name'])
-        save_cache(cache)
-        stats.log_summary()
+                await context.stats.increment('errors')
 
     except Exception as e:
-        logger.error(f"❌ Erreur traitement JSON pour {site['name']}: {e}")
+        logger.error(f"❌ Erreur traitement JSON pour {context.site['name']}: {e}")
+        await context.stats.increment('errors')
 
 
 # ---------------------------
@@ -1027,7 +1041,7 @@ async def crawl_json_api_async(site: Dict, force_recrawl: bool = False):
 def parse_arguments():
     """Parse les arguments de ligne de commande."""
     parser = argparse.ArgumentParser(
-        description='KidSearch Crawler v2.0 - Async - Moteur d\'indexation pour contenu éducatif',
+        description='KidSearch Crawler - Async - Moteur d\'indexation pour contenu éducatif',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
@@ -1173,7 +1187,7 @@ async def main_async():
             return
 
     logger.info(f"\n{'=' * 60}")
-    logger.info(f"🚀 KidSearch Crawler v2.0 - Async Edition with tqdm")
+    logger.info(f"🚀 KidSearch Crawler")
     logger.info(f"{'=' * 60}")
     logger.info(f"📋 {len(sites_to_crawl)} site(s) à crawler")
     logger.info(f"🔄 Mode: {'FORCE RECRAWL' if args.force else 'INCREMENTAL'}")
@@ -1188,18 +1202,29 @@ async def main_async():
         logger.info(f"    Type: {site.get('type', 'html').upper()}")
         logger.info(f"{'=' * 60}")
 
+        cache = load_cache()
+        context = CrawlContext(site, args.force, cache)
+        start_crawl_session(context.cache, site['name'], urlparse(site['crawl']).netloc)
+
+        completed_successfully = False
         try:
             if site.get('type') == 'json':
-                await crawl_json_api_async(site, force_recrawl=args.force)
+                await crawl_json_api_async(context)
             else:
-                await crawl_site_html_async(site, force_recrawl=args.force)
+                await crawl_site_html_async(context)
+            completed_successfully = True
         except KeyboardInterrupt:
             logger.warning("\n⚠️  Interruption par l'utilisateur")
-            break
+            break # Sortir de la boucle des sites
         except Exception as e:
-            logger.error(f"❌ Erreur critique lors du crawl de {site['name']}: {e}")
+            logger.error(f"❌ Erreur critique lors du crawl de {site['name']}: {e}", exc_info=args.verbose)
+        finally:
+            # Toujours marquer la session et afficher le résumé
+            complete_crawl_session(context.cache, site['name'])
+            save_cache(context.cache)
+            context.stats.log_summary()
 
-        if i < len(sites_to_crawl):
+        if completed_successfully and i < len(sites_to_crawl):
             logger.info("⏸️  Pause de 5 secondes avant le prochain site...\n")
             await asyncio.sleep(5)
 
