@@ -1,5 +1,5 @@
 # ---------------------------
-# KidSearch Crawler v2.0 - Async Edition
+# KidSearch Crawler v2.0 - Async Edition with tqdm
 # ---------------------------
 import yaml
 import aiohttp
@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 from typing import Dict, List, Optional, Set, Tuple
 import argparse
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
+from tqdm.asyncio import tqdm
+from tqdm import tqdm as tqdm_sync
 
 # ---------------------------
 # Logger
@@ -53,8 +55,8 @@ class Config:
     DEFAULT_DELAY = float(os.getenv('DEFAULT_DELAY', 0.5))
     BATCH_SIZE = int(os.getenv('BATCH_SIZE', 20))
     CACHE_DAYS = int(os.getenv('CACHE_DAYS', 7))
-    CONCURRENT_REQUESTS = int(os.getenv('CONCURRENT_REQUESTS', 5))  # Nombre de requêtes parallèles
-    MAX_CONNECTIONS = int(os.getenv('MAX_CONNECTIONS', 100))  # Pool de connexions
+    CONCURRENT_REQUESTS = int(os.getenv('CONCURRENT_REQUESTS', 5))
+    MAX_CONNECTIONS = int(os.getenv('MAX_CONNECTIONS', 100))
 
 
 config = Config()
@@ -404,10 +406,18 @@ class CrawlStats:
         self.errors = 0
         self.redirects = 0
         self.lock = asyncio.Lock()
+        self.pbar = None
 
     async def increment(self, attr: str):
         async with self.lock:
             setattr(self, attr, getattr(self, attr) + 1)
+            if self.pbar:
+                self.pbar.update(1)
+                self.pbar.set_postfix({
+                    'indexées': self.pages_indexed,
+                    'ignorées': self.pages_skipped,
+                    'erreurs': self.errors
+                })
 
     def log_summary(self):
         duration = time.time() - self.start_time
@@ -513,7 +523,6 @@ async def process_page(
         doc = None
         if should_index and len(content) >= 50:
             await stats.increment('pages_indexed')
-            logger.info(f"✅ Indexé: {title[:60]}")
 
             doc = {
                 "id": doc_id,
@@ -579,6 +588,14 @@ async def crawl_site_html_async(site: Dict, force_recrawl: bool = False):
         'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
     }
 
+    # Initialiser la barre de progression
+    stats.pbar = tqdm(
+        total=max_pages,
+        desc=f"🔍 {site['name']}",
+        unit="pages",
+        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+    )
+
     async with ClientSession(timeout=timeout, connector=connector, headers=headers) as session:
         while (to_visit or in_progress) and len(visited) < max_pages:
             # Prendre jusqu'à CONCURRENT_REQUESTS URLs
@@ -640,6 +657,9 @@ async def crawl_site_html_async(site: Dict, force_recrawl: bool = False):
                         if not is_excluded(link, exclude_patterns):
                             to_visit.add(link)
 
+    # Fermer la barre de progression
+    stats.pbar.close()
+
     # Indexer les documents restants
     if documents_to_index:
         try:
@@ -653,7 +673,7 @@ async def crawl_site_html_async(site: Dict, force_recrawl: bool = False):
 
 
 # ---------------------------
-# Crawl JSON (reste synchrone)
+# Crawl JSON
 # ---------------------------
 async def crawl_json_api_async(site: Dict, force_recrawl: bool = False):
     """Crawl une source JSON (wrapper async pour compatibilité)."""
@@ -687,6 +707,14 @@ async def crawl_json_api_async(site: Dict, force_recrawl: bool = False):
 
         logger.info(f"📦 {len(items)} éléments trouvés")
 
+        # Initialiser la barre de progression pour JSON
+        pbar = tqdm_sync(
+            total=len(items),
+            desc=f"🔍 {site['name']}",
+            unit="items",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+        )
+
         for item in items:
             try:
                 url_template = json_config['url']
@@ -699,9 +727,11 @@ async def crawl_json_api_async(site: Dict, force_recrawl: bool = False):
                         url = url.replace(f"{{{{{t_key}}}}}", str(value))
 
                 if not url or "{{" in url or not is_valid_url(url):
+                    pbar.update(1)
                     continue
 
                 if is_excluded(url, exclude_patterns):
+                    pbar.update(1)
                     continue
 
                 stats.pages_visited += 1
@@ -741,7 +771,6 @@ async def crawl_json_api_async(site: Dict, force_recrawl: bool = False):
 
                 if should_index:
                     stats.pages_indexed += 1
-                    logger.info(f"✅ Indexé: {title[:60]}")
 
                     doc = {
                         "id": doc_id,
@@ -769,9 +798,20 @@ async def crawl_json_api_async(site: Dict, force_recrawl: bool = False):
                 else:
                     stats.pages_skipped += 1
 
+                # Mettre à jour la barre de progression
+                pbar.update(1)
+                pbar.set_postfix({
+                    'indexées': stats.pages_indexed,
+                    'ignorées': stats.pages_skipped,
+                    'erreurs': stats.errors
+                })
+
             except Exception as e:
                 logger.error(f"❌ Erreur traitement item JSON: {e}")
                 stats.errors += 1
+                pbar.update(1)
+
+        pbar.close()
 
         if documents_to_index:
             try:
@@ -918,7 +958,7 @@ async def main_async():
             return
 
     logger.info(f"\n{'=' * 60}")
-    logger.info(f"🚀 KidSearch Crawler v2.0 - Async Edition")
+    logger.info(f"🚀 KidSearch Crawler v2.0 - Async Edition with tqdm")
     logger.info(f"{'=' * 60}")
     logger.info(f"📋 {len(sites_to_crawl)} site(s) à crawler")
     logger.info(f"🔄 Mode: {'FORCE RECRAWL' if args.force else 'INCREMENTAL'}")
