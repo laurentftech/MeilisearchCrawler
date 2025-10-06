@@ -1,4 +1,4 @@
-# KidSearch Crawler v2.0
+# Meilisearch Crawler
 
 This project is a high-performance, asynchronous web crawler designed to populate a Meilisearch instance with content from various websites. It serves as a companion for the [KidSearch](https://github.com/laurentftech/kidsearch) project, a safe search engine for children.
 
@@ -7,13 +7,16 @@ The crawler is configurable via a simple YAML file (`sites.yml`) and supports bo
 ## Features
 
 - **Asynchronous & Parallel**: Built with `asyncio` and `aiohttp` for high-speed, concurrent crawling.
-- **Multi-site Crawling**: Crawl several websites defined in `sites.yml`.
+- **Multi-site Crawling**: Crawl multiple websites defined in a single `sites.yml` file.
 - **Flexible Sources**: Supports both standard HTML websites and JSON APIs.
 - **Incremental Indexing**: Uses a local cache to only re-index pages that have changed since the last crawl, saving time and resources.
-- **Smart Content Extraction**: Intelligently attempts to find and clean the main content of a webpage, removing headers, footers, and sidebars.
-- **Respects `robots.txt`**: Follows the standard exclusion protocol defined by websites to be a good web citizen.
+- **Crawl Resumption**: Automatically resumes crawls that were stopped by page limits, allowing for the progressive indexing of very large sites.
+- **Smart Content Extraction**: Uses `trafilatura` for robust, AI-powered main content detection, with fallback to custom heuristics and manual CSS selectors.
+- **Language Detection**: Automatically detects the language of HTML pages and allows manual setting for JSON sources, enabling language-specific filtering in search results.
+- **Respects `robots.txt`**: Follows standard exclusion protocols, including `Crawl-delay`, to be a good web citizen.
+- **Global & Per-Site Exclusions**: Comes with a built-in list of common crawler traps (`/login`, `/cart`, etc.) and allows for site-specific exclusion rules.
 - **Advanced CLI**: Powerful command-line options to force re-crawling, target specific sites, clear the cache, and more.
-- **Easy Configuration**: All settings are managed through a `sites.yml` file and a `.env` file for credentials, including concurrency settings.
+- **Easy Configuration**: All crawl settings are managed through a single `sites.yml` file and a `.env` file for credentials.
 
 ## Prerequisites
 
@@ -109,9 +112,11 @@ The `sites.yml` file allows you to define a list of sites to crawl. Each site is
 - `name`: (String) The name of the site, used for filtering in Meilisearch.
 - `crawl`: (String) The starting URL for the crawl.
 - `type`: (String) The type of content. Can be `html` or `json`.
-- `delay`: (Float) Minimum delay in seconds between requests for this site. Overrides `robots.txt` if higher.
+- `delay`: (Float, optional) Minimum delay in seconds between requests for this site. Overrides `robots.txt` if higher.
 - `max_pages`: (Integer) The maximum number of pages to crawl for this site.
 - `depth`: (Integer) The maximum depth to follow links from the starting URL. A depth of `1` will only crawl the starting page. A depth of `2` will also crawl the pages linked from it.
+- `selector`: (String, optional) For HTML sites, a specific CSS selector (e.g., `.main-article`) to pinpoint the main content area. This overrides automatic detection for tricky layouts.
+- `lang`: (String, optional) For JSON sources, specifies the language of the content (e.g., "en", "fr"). For HTML, it's auto-detected.
 - `exclude`: (List of strings) A list of URL patterns to completely ignore. Any URL matching one of these patterns will not be visited. This applies to both HTML pages and items from JSON sources.
 - `no_index`: (List of strings) A list of URL patterns to visit for link discovery but not to index. This is useful for sitemap pages or category indexes whose content is not valuable for search results.
 
@@ -120,18 +125,9 @@ The `sites.yml` file allows you to define a list of sites to crawl. Each site is
 If `type` is `json`, you must also provide a `json` object with the following mapping:
 
 - `root`: The key in the JSON response that contains the list of items.
-- `id`: The key for the unique identifier of each item.
 - `title`: The key for the item's title.
 - `url`: The key for the item's URL.
 -   **URL Templating**: You can construct URLs using values from the JSON object. Use `{{key_name}}` to substitute a value. For example: `"https://example.com/books/{{id}}"`.
 - `content`: A comma-separated list of keys for the content. You can use `[]` to access all items in a list (e.g., `authors[].name`).
 - `image`: The key for the item's main image URL.
 -   **Image URL Templating**: This also supports templating like the `url` field. For example: `"https://covers.example.com/{{cover_id}}.jpg"`.
-
-## Contributing
-
-Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
-
-## License
-
-MIT

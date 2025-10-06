@@ -1,16 +1,22 @@
-# Meilisearch Crawler pour KidSearch
+# Meilisearch Crawler
 
-Ce projet est un crawler web flexible conçu pour peupler une instance Meilisearch avec le contenu de divers sites web. Il sert de compagnon au projet [KidSearch](https://github.com/laurentftech/kidsearch), un moteur de recherche sécurisé pour les enfants.
+Ce projet est un crawler web asynchrone et performant, conçu pour peupler une instance Meilisearch avec le contenu de divers sites web. Il sert de compagnon au projet [KidSearch](https://github.com/laurentftech/kidsearch), un moteur de recherche sécurisé pour les enfants.
 
 Le crawler est configurable via un simple fichier YAML (`sites.yml`) et prend en charge à la fois les pages HTML et les API JSON comme sources de données.
 
 ## Fonctionnalités
 
-- **Crawl multi-sites** : Explore plusieurs sites web définis dans `sites.yml`.
+- **Asynchrone & Parallèle**: Conçu avec `asyncio` et `aiohttp` pour un crawl simultané à haute vitesse.
+- **Crawl multi-sites** : Explore plusieurs sites web définis dans un unique fichier `sites.yml`.
 - **Sources flexibles** : Prend en charge les sites web HTML standards et les API JSON.
 - **Indexation incrémentielle** : Utilise un cache local pour ne réindexer que les pages qui ont changé depuis le dernier crawl, économisant ainsi du temps et des ressources.
-- **Extraction de contenu intelligente** : Tente intelligemment de trouver et de nettoyer le contenu principal d'une page web, en supprimant les en-têtes, pieds de page et barres latérales.
-- **Configuration facile** : Tous les paramètres sont gérés via un fichier `sites.yml` et un fichier `.env` pour les informations d'identification.
+- **Reprise du crawl**: Reprend automatiquement un crawl qui a été arrêté par une limite de pages, permettant une indexation progressive des très grands sites.
+- **Extraction de contenu intelligente** : Utilise `trafilatura` pour une détection robuste du contenu principal, avec des heuristiques personnalisées et des sélecteurs CSS manuels en solution de repli.
+- **Détection de la langue**: Détecte automatiquement la langue des pages HTML et permet de la spécifier pour les sources JSON, autorisant le filtrage par langue dans les résultats de recherche.
+- **Respect de `robots.txt`**: Suit les protocoles d'exclusion standards, y compris la directive `Crawl-delay`, pour être un bon citoyen du web.
+- **Exclusions globales et par site**: Intègre une liste de "pièges à crawler" courants (`/login`, `/cart`, etc.) et permet de définir des règles d'exclusion spécifiques à chaque site.
+- **CLI avancée**: Options de ligne de commande puissantes pour forcer une réindexation, cibler des sites spécifiques, vider le cache, etc.
+- **Configuration facile** : Tous les paramètres sont gérés via un unique fichier `sites.yml` et un fichier `.env` pour les informations d'identification.
 
 ## Prérequis
 
@@ -67,8 +73,8 @@ Ce crawler a besoin d'une instance Meilisearch pour y envoyer ses données. La m
 
 Exécutez simplement le script `crawler.py` :
 
-```bash
-python crawler.py
+```sh
+python crawler.py # Lance un crawl incrémentiel sur tous les sites
 ```
 
 Le crawler démarrera, lira votre configuration `sites.yml` et commencera à indexer le contenu dans votre instance Meilisearch sous l'index `kidsearch`.

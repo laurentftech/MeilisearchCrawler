@@ -212,11 +212,14 @@ def start_crawl_session(cache: Dict, site_name: str, domain: str):
     save_cache(cache)
 
 
-def complete_crawl_session(cache: Dict, site_name: str):
+def complete_crawl_session(cache: Dict, site_name: str, completed: bool = True, resume_urls: Optional[Set[str]] = None):
     """Marque la fin réussie d'un crawl."""
     if site_name in cache['_meta']['crawls']:
-        cache['_meta']['crawls'][site_name]['completed'] = True
+        cache['_meta']['crawls'][site_name]['completed'] = completed
         cache['_meta']['crawls'][site_name]['finished'] = datetime.now().isoformat()
+        if resume_urls:
+            cache['_meta']['crawls'][site_name]['resume_from'] = list(resume_urls)
+
         save_cache(cache)
 
 
@@ -769,7 +772,18 @@ async def crawl_site_html_async(context: CrawlContext):
     # start_crawl_session(context.cache, context.site['name'], domain)
     documents_to_index = []
 
-    to_visit = {normalize_url(base_url)}
+    # Vérifier s'il faut reprendre un crawl précédent
+    crawl_meta = context.cache.get('_meta', {}).get('crawls', {}).get(context.site['name'], {})
+    resume_urls = crawl_meta.get('resume_from')
+
+    if resume_urls and not context.force_recrawl:
+        logger.info(f"🔄 Reprise du crawl depuis {len(resume_urls)} URLs précédemment découvertes.")
+        to_visit = set(resume_urls)
+        # Nettoyer la liste de reprise pour ne pas la réutiliser
+        del context.cache['_meta']['crawls'][context.site['name']]['resume_from']
+    else:
+        to_visit = {normalize_url(base_url)}
+
     visited: Set[str] = set()
     in_progress: Set[str] = set()
 
@@ -868,6 +882,11 @@ async def crawl_site_html_async(context: CrawlContext):
 
     # Mettre à jour le nombre de liens découverts mais non visités
     context.stats.discovered_but_not_visited = len(to_visit)
+
+    # Si le crawl est incomplet, sauvegarder les URLs restantes pour une reprise future
+    if len(to_visit) > 0 and len(visited) >= max_pages:
+        logger.info(f"📝 Sauvegarde de {len(to_visit)} URLs pour une reprise future.")
+        complete_crawl_session(context.cache, context.site['name'], completed=False, resume_urls=to_visit)
 
     # Indexer les documents restants
     if documents_to_index:
@@ -1220,7 +1239,7 @@ async def main_async():
             logger.error(f"❌ Erreur critique lors du crawl de {site['name']}: {e}", exc_info=args.verbose)
         finally:
             # Toujours marquer la session et afficher le résumé
-            complete_crawl_session(context.cache, site['name'])
+            complete_crawl_session(context.cache, site['name'], completed=completed_successfully)
             save_cache(context.cache)
             context.stats.log_summary()
 
