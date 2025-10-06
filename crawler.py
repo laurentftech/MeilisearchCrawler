@@ -516,8 +516,10 @@ class CrawlStats:
     async def increment(self, attr: str):
         async with self.lock:
             setattr(self, attr, getattr(self, attr) + 1)
-            if self.pbar:
+            # Mettre à jour la barre de progression uniquement pour les pages visitées
+            if self.pbar and attr == 'pages_visited':
                 self.pbar.update(1)
+            if self.pbar: # Mettre à jour les stats affichées à chaque fois
                 self.pbar.set_postfix({
                     'indexées': self.pages_indexed,
                     'non-indexées': self.pages_not_indexed,
@@ -593,6 +595,13 @@ async def fetch_page(session: ClientSession, url: str, rate_limiter: RateLimiter
                 if response.status == 304:
                     return (url, None, {'status': 304, 'etag': None, 'last_modified': None})
 
+                # Vérifier le Content-Type AVANT de lire le corps de la réponse
+                content_type = response.headers.get('Content-Type', '')
+                if 'text/html' not in content_type.lower():
+                    logger.debug(f"   ↪️ Ignoré (type non-HTML: {content_type}): {url}")
+                    # On retourne un tuple spécial pour indiquer que la page a été visitée mais ignorée
+                    return (url, None, {'status': 'skipped_content_type'})
+
                 response.raise_for_status()
                 text = await response.text()
 
@@ -643,6 +652,12 @@ async def process_page(
     if metadata['status'] == 304:
         await stats.increment('pages_not_modified')
         await stats.increment('pages_visited')
+        return None, []
+
+    # Gestion du type de contenu non-HTML
+    if metadata['status'] == 'skipped_content_type':
+        await stats.increment('pages_visited') # On l'a visitée, mais on ne l'indexe pas
+        await stats.increment('pages_not_indexed')
         return None, []
 
     await stats.increment('pages_visited')
@@ -764,6 +779,13 @@ async def crawl_site_html_async(site: Dict, force_recrawl: bool = False):
                 if url in visited or url in in_progress:
                     continue
                 if is_excluded(url, exclude_patterns):
+                    continue
+
+                # Vérification rapide de l'extension pour éviter les requêtes inutiles
+                ignored_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.pdf', '.zip', '.rar', '.mp3', '.mp4', '.avi')
+                if url.lower().endswith(ignored_extensions):
+                    logger.debug(f"   ↪️ Ignoré (extension de fichier): {url}")
+                    visited.add(url) # On la marque comme visitée pour ne pas y revenir
                     continue
 
                 robot_parser = get_robot_parser(url)
