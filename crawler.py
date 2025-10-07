@@ -15,6 +15,7 @@ import json
 import os
 import re
 from datetime import datetime
+import sys
 from dotenv import load_dotenv
 from typing import Dict, List, Optional, Set, Tuple
 import argparse
@@ -26,20 +27,33 @@ import trafilatura
 # ---------------------------
 # Logger
 # ---------------------------
+def get_base_path():
+    """Retourne le chemin de base pour les fichiers, que le script soit compilé ou non."""
+    if getattr(sys, 'frozen', False):
+        # Si l'application est compilée (frozen) par PyInstaller
+        return os.path.dirname(sys.executable)
+    else:
+        # Si c'est un script .py normal
+        return os.path.dirname(os.path.abspath(__file__))
+
+
+BASE_PATH = get_base_path()
+LOG_FILE_PATH = os.path.join(BASE_PATH, 'crawler.log')
+
+# ---------------------------
+# Charger les variables d'environnement
+# ---------------------------
+load_dotenv(os.path.join(BASE_PATH, '.env'))
+
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] [%(levelname)s] %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('crawler.log', encoding='utf-8')
+        logging.FileHandler(LOG_FILE_PATH, encoding='utf-8')
     ]
 )
 logger = logging.getLogger(__name__)
-
-# ---------------------------
-# Charger les variables d'environnement
-# ---------------------------
-load_dotenv()
 
 
 # ---------------------------
@@ -50,7 +64,7 @@ class Config:
     MEILI_URL = os.getenv("MEILI_URL")
     MEILI_KEY = os.getenv("MEILI_KEY")
     INDEX_NAME = os.getenv("INDEX_NAME", "kidsearch")
-    CACHE_FILE = "crawler_cache.json"
+    CACHE_FILE = os.path.join(BASE_PATH, "crawler_cache.json")
     MAX_RETRIES = int(os.getenv('MAX_RETRIES', 3))
     TIMEOUT = int(os.getenv('TIMEOUT', 15))
     DEFAULT_DELAY = float(os.getenv('DEFAULT_DELAY', 0.5))
@@ -129,7 +143,7 @@ except Exception as e:
 # Charger sites.yml
 # ---------------------------
 try:
-    with open("sites.yml", "r", encoding='utf-8') as f:
+    with open(os.path.join(BASE_PATH, "sites.yml"), "r", encoding='utf-8') as f:
         sites_data = yaml.safe_load(f)
         sites = sites_data.get("sites", sites_data)
     logger.info(f"📋 {len(sites)} site(s) chargé(s) depuis sites.yml")

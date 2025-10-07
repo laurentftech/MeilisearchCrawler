@@ -50,19 +50,31 @@ Ce crawler a besoin d'une instance Meilisearch pour y envoyer ses données. La m
     cd MeilisearchCrawler
     ```
 
-2.  **Installez les dépendances** :
+2.  **Créez et activez un environnement virtuel** (Recommandé) :
+    Un environnement virtuel permet d'isoler les dépendances du projet et d'éviter les conflits.
+    ```bash
+    # Créez l'environnement
+    python3 -m venv venv
+
+    # Activez-le (sur macOS/Linux)
+    source venv/bin/activate
+    # Sur Windows, utilisez : venv\Scripts\activate
+    ```
+
+3.  **Installez les dépendances** :
+    Avec l'environnement virtuel activé, installez les paquets requis.
     ```bash
     pip install -r requirements.txt
     ```
 
-3.  **Configurez les variables d'environnement** :
+4.  **Configurez les variables d'environnement** :
     Copiez le fichier d'exemple et modifiez-le avec vos informations d'identification Meilisearch.
     ```bash
     cp .env.example .env
     ```
     Maintenant, ouvrez `.env` et remplissez vos `MEILI_URL` et `MEILI_KEY`.
 
-4.  **Configurez les sites à crawler** :
+5.  **Configurez les sites à crawler** :
     Copiez le fichier d'exemple des sites. C'est ici que vous définirez les sites web que le crawler doit visiter.
     ```bash
     cp sites.yml.example sites.yml
