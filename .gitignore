@@ -10,3 +10,5 @@ config/sites.yml
 config/sites-complet.yml
 
 crawler.log
+/data/status.json
+/data/crawler.pid
