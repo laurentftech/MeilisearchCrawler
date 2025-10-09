@@ -11,7 +11,7 @@ The crawler is configurable via a simple YAML file (`sites.yml`) and supports bo
 - **Flexible Sources**: Supports both standard HTML websites and JSON APIs.
 - **Incremental Indexing**: Uses a local cache to only re-index pages that have changed since the last crawl, saving time and resources.
 - **Crawl Resumption**: Automatically resumes crawls that were stopped by page limits, allowing for the progressive indexing of very large sites.
-- **Smart Content Extraction**: Uses `trafilatura` for robust, AI-powered main content detection, with fallback to custom heuristics and manual CSS selectors.
+- **Smart Content Extraction**: Uses [`trafilatura`](https://github.com/adbar/trafilatura) for robust, AI-powered main content detection, with fallback to custom heuristics and manual CSS selectors.
 - **Language Detection**: Automatically detects the language of HTML pages and allows manual setting for JSON sources, enabling language-specific filtering in search results.
 - **Respects `robots.txt`**: Follows standard exclusion protocols, including `Crawl-delay`, to be a good web citizen.
 - **Global & Per-Site Exclusions**: Comes with a built-in list of common crawler traps (`/login`, `/cart`, etc.) and allows for site-specific exclusion rules.

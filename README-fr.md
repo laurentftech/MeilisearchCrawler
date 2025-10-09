@@ -11,7 +11,7 @@ Le crawler est configurable via un simple fichier YAML (`sites.yml`) et prend en
 - **Sources flexibles** : Prend en charge les sites web HTML standards et les API JSON.
 - **Indexation incrémentielle** : Utilise un cache local pour ne réindexer que les pages qui ont changé depuis le dernier crawl, économisant ainsi du temps et des ressources.
 - **Reprise du crawl**: Reprend automatiquement un crawl qui a été arrêté par une limite de pages, permettant une indexation progressive des très grands sites.
-- **Extraction de contenu intelligente** : Utilise `trafilatura` pour une détection robuste du contenu principal, avec des heuristiques personnalisées et des sélecteurs CSS manuels en solution de repli.
+- **Extraction de contenu intelligente** : Utilise [`trafilatura`](https://github.com/adbar/trafilatura) pour une détection robuste du contenu principal, avec des heuristiques personnalisées et des sélecteurs CSS manuels en solution de repli.
 - **Détection de la langue**: Détecte automatiquement la langue des pages HTML et permet de la spécifier pour les sources JSON, autorisant le filtrage par langue dans les résultats de recherche.
 - **Respect de `robots.txt`**: Suit les protocoles d'exclusion standards, y compris la directive `Crawl-delay`, pour être un bon citoyen du web.
 - **Exclusions globales et par site**: Intègre une liste de "pièges à crawler" courants (`/login`, `/cart`, etc.) et permet de définir des règles d'exclusion spécifiques à chaque site.
