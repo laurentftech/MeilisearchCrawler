@@ -5,16 +5,25 @@ import plotly.express as px
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 import time
+import json
 
 from src.meilisearch_client import get_meili_client
-from src.config import INDEX_NAME
+from src.config import INDEX_NAME, CACHE_FILE
 from src.state import is_crawler_running
 
-st.title("🌳 Arbre des Pages Indexées")
+st.title("🌳 Arbre des Pages")
 st.markdown("Visualisez la structure et la fraîcheur de l'indexation Meilisearch de vos pages")
 
 meili_client = get_meili_client()
 running = is_crawler_running()
+
+def load_cache_urls():
+    """Charge les URLs depuis le fichier de cache."""
+    try:
+        with open(CACHE_FILE, 'r') as f:
+            return set(json.load(f).keys())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
 
 if not meili_client:
     st.error("❌ Connexion à Meilisearch non disponible.")
@@ -62,6 +71,7 @@ else:
             if filter_site != "Tous les sites":
                 params['filter'] = f'site = "{filter_site}"'
 
+            # 1. Récupérer les documents de Meilisearch
             result = index_ref.get_documents(params)
             documents = result.results if hasattr(result, 'results') else []
 
@@ -69,10 +79,13 @@ else:
             st.warning("⚠️ Aucune page trouvée dans l'index.")
         else:
             # Préparer les données
+            # On utilise un dictionnaire pour dédupliquer les URLs entre le cache et l'index
+            data_map = {}
             data = []
             now = datetime.now()
 
-            for doc in documents:
+            # 2. Traiter les documents déjà indexés
+            for doc in documents: # type: ignore
                 doc_dict = doc if isinstance(doc, dict) else doc.__dict__
 
                 url = doc_dict.get('url', '')
@@ -81,12 +94,13 @@ else:
 
                 # IMPORTANT : On cherche la date d'indexation Meilisearch
                 # Cela peut être stocké dans différents champs selon votre crawler
-                indexed_at = doc_dict.get('indexed_at') or doc_dict.get('_meilisearch_indexed_at') or doc_dict.get(
-                    'crawled_at')
+                indexed_at = doc_dict.get('indexed_at') or doc_dict.get('last_modified') or doc_dict.get('timestamp')
+                if indexed_at and isinstance(indexed_at, (int, float)):
+                    indexed_date = datetime.fromtimestamp(indexed_at)
 
                 # Calculer depuis quand la page est indexée dans Meilisearch
                 freshness_days = None
-                freshness_category = "Jamais indexé"
+                freshness_category = "Date inconnue"
                 freshness_color = "#6b7280"  # Gris par défaut
 
                 if indexed_at:
@@ -129,7 +143,7 @@ else:
                     else:
                         page_name = "Page d'accueil"
 
-                    data.append({
+                    data_map[url] = {
                         'site': site,
                         'path_parts': path_parts,
                         'page': page_name,
@@ -139,14 +153,47 @@ else:
                         'freshness_category': freshness_category,
                         'freshness_color': freshness_color,
                         'indexed_at': indexed_at
-                    })
+                    }
 
+            # 3. Charger les URLs du cache et ajouter celles qui ne sont pas déjà dans l'index
+            cached_urls = load_cache_urls()
+            for url in cached_urls:
+                if url not in data_map:
+                    try:
+                        parsed = urlparse(url)
+                        # Essayer d'extraire le nom du site du filtre si possible
+                        site_name = filter_site if filter_site != "Tous les sites" else parsed.netloc
+
+                        # Appliquer le filtre de site
+                        if filter_site != "Tous les sites" and site_name not in url:
+                            continue
+
+                        path_parts = [p for p in parsed.path.split('/') if p]
+                        page_name = path_parts[-1][:40] if path_parts else "Page d'accueil"
+
+                        data_map[url] = {
+                            'site': site_name,
+                            'path_parts': path_parts,
+                            'page': page_name,
+                            'url': url,
+                            'title': "En attente d'indexation",
+                            'freshness_days': 9999, # Valeur très haute pour le tri
+                            'freshness_category': "En attente",
+                            'freshness_color': "#4b5563", # Gris foncé
+                            'indexed_at': None
+                        }
+                    except Exception:
+                        continue # Ignorer les URLs malformées du cache
+
+            data = list(data_map.values())
+            
             if not data:
                 st.warning("⚠️ Impossible de traiter les données des pages.")
             else:
                 df = pd.DataFrame(data)
 
                 # Statistiques
+                total_pages = len(df)
                 st.markdown("---")
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("📄 Pages analysées", len(df))
@@ -158,8 +205,9 @@ else:
                 else:
                     col3.metric("📅 Ancienneté moyenne index", "N/A")
 
-                recent_count = len(df[df['freshness_days'] < 7])
-                col4.metric("🆕 Indexées récemment (< 7j)", recent_count)
+                pending_count = len(df[df['freshness_category'] == "En attente"])
+                if pending_count > 0:
+                    col4.metric("⏳ Pages en attente", pending_count)
 
                 # Créer la structure hiérarchique pour Plotly
                 labels = []
@@ -178,9 +226,9 @@ else:
                 id_counter += 1
                 labels.append("Toutes les pages")
                 parents.append("")
-                values.append(len(df))
+                values.append(total_pages)
                 colors.append(30)  # Couleur neutre
-                hover_texts.append(f"<b>Toutes les pages</b><br>Total: {len(df)} pages")
+                hover_texts.append(f"<b>Toutes les pages</b><br>Total: {total_pages} pages")
                 ids.append(root_id)
                 node_map[""] = root_id
 
@@ -233,13 +281,18 @@ else:
                         labels.append(row['page'])
                         parents.append(current_parent_id)
                         values.append(1)
-                        colors.append(row['freshness_days'])
-                        hover_text = (
-                            f"<b>{row['title']}</b><br>"
-                            f"Statut: {row['freshness_category']}<br>"
-                            f"Indexé il y a: {row['freshness_days']} jours<br>"
-                            f"<a href='{row['url']}'>{row['url'][:50]}...</a>"
-                        )
+                        
+                        if row['freshness_category'] == "En attente":
+                            colors.append(181) # Couleur spéciale pour "En attente"
+                            hover_text = f"<b>{row['url'][:60]}...</b><br>Statut: En attente d'indexation"
+                        else:
+                            colors.append(row['freshness_days'])
+                            hover_text = (
+                                f"<b>{row['title']}</b><br>"
+                                f"Statut: {row['freshness_category']}<br>"
+                                f"Indexé il y a: {row['freshness_days']} jours<br>"
+                                f"<a href='{row['url']}'>{row['url'][:50]}...</a>"
+                            )
                         hover_texts.append(hover_text)
                         ids.append(page_id)
 
@@ -247,16 +300,17 @@ else:
                 st.markdown("---")
                 st.subheader("🗺️ Carte Hiérarchique - Fraîcheur de l'Indexation")
 
-                st.info("💡 **Code couleur** : Vert = indexé récemment | Rouge = nécessite une ré-indexation")
+                st.info("💡 **Code couleur** : Vert = récent | Rouge = ancien | Gris = en attente")
 
                 # Palette de couleurs pour la fraîcheur (inversée pour que vert = récent)
                 colorscale = [
                     [0, '#22c55e'],  # Vert (indexé aujourd'hui)
                     [0.05, '#84cc16'],  # Vert clair (< 7j)
                     [0.2, '#eab308'],  # Jaune (< 30j)
-                    [0.5, '#f97316'],  # Orange (< 90j)
-                    [0.8, '#ef4444'],  # Rouge (< 180j)
-                    [1, '#991b1b']  # Rouge foncé (> 180j - à ré-indexer)
+                    [0.4, '#f97316'],  # Orange (< 90j)
+                    [0.6, '#ef4444'],  # Rouge (> 90j)
+                    [0.8, '#991b1b'],  # Rouge foncé (> 180j)
+                    [1, '#4b5563']   # Gris pour "En attente"
                 ]
 
                 if viz_type == "TreeMap":
@@ -269,12 +323,12 @@ else:
                             colors=colors,
                             colorscale=colorscale,
                             cmid=45,  # Centre de l'échelle
-                            cmin=0,
-                            cmax=180,
+                            cmin=0, 
+                            cmax=181, # Ajusté pour inclure la couleur "en attente"
                             colorbar=dict(
                                 title="Jours depuis<br>indexation",
                                 thickness=20,
-                                len=0.7,
+                                len=0.8,
                                 tickvals=[0, 7, 30, 90, 180],
                                 ticktext=['Aujourd\'hui', '7j', '30j', '90j', '180j+']
                             )
@@ -296,12 +350,12 @@ else:
                             colors=colors,
                             colorscale=colorscale,
                             cmid=45,
-                            cmin=0,
-                            cmax=180,
+                            cmin=0, 
+                            cmax=181,
                             colorbar=dict(
                                 title="Jours depuis<br>indexation",
                                 thickness=20,
-                                len=0.7,
+                                len=0.8,
                                 tickvals=[0, 7, 30, 90, 180],
                                 ticktext=['Aujourd\'hui', '7j', '30j', '90j', '180j+']
                             )
@@ -321,12 +375,12 @@ else:
                             colors=colors,
                             colorscale=colorscale,
                             cmid=45,
-                            cmin=0,
-                            cmax=180,
+                            cmin=0, 
+                            cmax=181,
                             colorbar=dict(
                                 title="Jours depuis<br>indexation",
                                 thickness=20,
-                                len=0.7,
+                                len=0.8,
                                 tickvals=[0, 7, 30, 90, 180],
                                 ticktext=['Aujourd\'hui', '7j', '30j', '90j', '180j+']
                             )
@@ -349,7 +403,8 @@ else:
                     "Indexé ce mois-ci",
                     "Indexé il y a 1-3 mois",
                     "Indexé il y a > 3 mois",
-                    "Jamais indexé"
+                    "Date inconnue",
+                    "En attente"
                 ]
 
                 # Palette de couleurs fixe par catégorie
@@ -359,7 +414,8 @@ else:
                     "Indexé ce mois-ci": "#eab308",
                     "Indexé il y a 1-3 mois": "#f97316",
                     "Indexé il y a > 3 mois": "#ef4444",
-                    "Jamais indexé": "#6b7280"
+                    "Date inconnue": "#6b7280",
+                    "En attente": "#4b5563"
                 }
 
                 freshness_counts = df['freshness_category'].value_counts()
@@ -392,7 +448,7 @@ else:
 
                 with col1:
                     st.subheader("⏰ Pages à Ré-indexer (les plus anciennes)")
-                    old_pages = df[df['freshness_days'] < 999].nlargest(10, 'freshness_days')[
+                    old_pages = df[df['freshness_days'] < 9999].nlargest(10, 'freshness_days')[
                         ['title', 'site', 'freshness_days', 'freshness_category', 'indexed_at']
                     ]
                     if not old_pages.empty:
@@ -408,7 +464,7 @@ else:
 
                 with col2:
                     st.subheader("🆕 Pages Récemment Indexées")
-                    recent_pages = df[df['freshness_days'] < 999].nsmallest(10, 'freshness_days')[
+                    recent_pages = df[df['freshness_days'] < 9999].nsmallest(10, 'freshness_days')[
                         ['title', 'site', 'freshness_days', 'freshness_category', 'indexed_at']
                     ]
                     if not recent_pages.empty:
