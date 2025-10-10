@@ -93,6 +93,7 @@ with col1:
     - **🔧 Contrôles**: Démarrez, arrêtez le crawler et gérez le cache.
     - **🔍 Recherche**: Testez des requêtes sur votre index Meilisearch.
     - **📊 Statistiques**: Analysez la distribution des documents et des champs.
+    - **🌳 Arbre des Pages**: Visualisez la structure et la fraîcheur des pages indexées.
     - **⚙️ Configuration**: Modifiez la configuration des sites à crawler.
     - **🪵 Logs**: Consultez les logs détaillés du crawler.
     """)
