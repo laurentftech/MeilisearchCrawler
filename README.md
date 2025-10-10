@@ -18,6 +18,8 @@ The crawler is configurable via a simple YAML file (`sites.yml`) and supports bo
 - **Global & Per-Site Exclusions**: Define global and site-specific URL patterns to ignore.
 - **Advanced CLI**: Powerful command-line options for fine-grained control.
 
+![screenshot_dashboard.png](media/screenshot_dashboard.png)
+
 ## Prerequisites
 
 - Python 3.8+

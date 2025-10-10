@@ -18,6 +18,8 @@ Le crawler est configurable via un simple fichier YAML (`sites.yml`) et prend en
 - **Exclusions globales et par site**: Définissez des motifs d'URL globaux et spécifiques au site à ignorer.
 - **CLI avancée**: Options de ligne de commande puissantes pour un contrôle précis.
 
+![screenshot_dashboard.png](media/screenshot_dashboard.png)
+
 ## Prérequis
 
 - Python 3.8+
