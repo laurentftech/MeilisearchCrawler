@@ -116,6 +116,7 @@ Le projet inclut un tableau de bord web pour surveiller et contrôler le crawler
 -   **🔧 Contrôles**: Démarrez ou arrêtez le crawler, sélectionnez un site spécifique, forcez une réindexation et videz le cache.
 -   **🔍 Recherche**: Une interface de recherche pour tester des requêtes directement sur votre index Meilisearch.
 -   **📊 Statistiques**: Des statistiques détaillées sur votre index Meilisearch, y compris la distribution des documents par site.
+-   **🌳 Arbre des Pages**: Visualisez la structure, la fraîcheur des pages indexées et les pages en attente de crawl.
 -   **⚙️ Configuration**: Un éditeur interactif pour voir et modifier le fichier de configuration `sites.yml`.
 -   **🪵 Logs**: Une vue en direct du fichier de log du crawler.
 

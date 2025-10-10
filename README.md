@@ -116,6 +116,7 @@ The project includes a web-based dashboard to monitor and control the crawler in
 -   **🔧 Controls**: Start or stop the crawler, select a specific site, force a re-crawl, and clear the cache.
 -   **🔍 Search**: A live search interface to test queries directly against your Meilisearch index.
 -   **📊 Statistics**: Detailed statistics about your Meilisearch index, including document distribution by site and field distribution.
+-   **🌳 Page Tree**: An interactive visualization of your site's structure, showing the freshness of indexed pages and pages pending crawl.
 -   **⚙️ Configuration**: An interactive editor to view and modify the `sites.yml` configuration file.
 -   **🪵 Logs**: A live view of the crawler's log file.
 
