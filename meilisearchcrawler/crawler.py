@@ -120,9 +120,14 @@ def update_meilisearch_settings(index):
     logger.info("⚙️ Mise à jour des paramètres MeiliSearch...")
     settings = {
         'searchableAttributes': ['title', 'excerpt', 'content', 'site', 'images.alt'],
-        'displayedAttributes': ['title', 'url', 'site', 'images', 'timestamp', 'excerpt', 'content', 'lang'],
-        'filterableAttributes': ['site', 'timestamp', 'lang'],
-        'sortableAttributes': ['timestamp'],
+        'displayedAttributes': [
+            'title', 'url', 'site', 'images', 'timestamp', 'excerpt',
+            'content', 'lang', 'indexed_at', 'last_crawled_at', 'content_hash'  # ← AJOUTER
+        ],
+        'filterableAttributes': [
+            'site', 'timestamp', 'lang', 'indexed_at', 'last_crawled_at'  # ← AJOUTER
+        ],
+        'sortableAttributes': ['timestamp', 'indexed_at', 'last_crawled_at'],  # ← AJOUTER
         'rankingRules': ['words', 'typo', 'proximity', 'attribute', 'sort', 'exactness']
     }
     try:
@@ -777,7 +782,15 @@ async def process_page(
     if metadata['status'] == 304:
         await context.stats.increment('pages_not_modified')
         await context.stats.increment('pages_visited')
-        return None, []
+
+        # ← NOUVEAU : Créer un document minimal pour mettre à jour last_crawled_at
+        doc_id = generate_doc_id(final_url)
+        refresh_doc = {
+            "id": doc_id,
+            "last_crawled_at": datetime.now().isoformat(),
+            # indexed_at reste inchangé car le contenu n'a pas changé
+        }
+        return refresh_doc, []
 
     # Gestion du type de contenu non-HTML
     if metadata['status'] == 'skipped_content_type':
@@ -819,6 +832,8 @@ async def process_page(
             if html_tag and html_tag.get('lang'):
                 lang = html_tag.get('lang').split('-')[0].lower()
 
+            now_iso = datetime.now().isoformat()
+
             doc = {
                 "id": doc_id,
                 "site": context.site["name"],
@@ -828,8 +843,10 @@ async def process_page(
                 "content": content,
                 "images": images,
                 "lang": lang,
-                "timestamp": int(time.time()),
-                "last_modified": datetime.now().isoformat()
+                "timestamp": int(time.time()),  # Pour tri chronologique
+                "indexed_at": now_iso,  # ← NOUVEAU : Date d'indexation Meilisearch
+                "last_crawled_at": now_iso,  # ← NOUVEAU : Dernière visite du crawler
+                "content_hash": content_hash,  # ← UTILE : Pour analytics
             }
             async with context.cache_lock:
                 update_cache(context.cache, final_url, content_hash, doc_id, metadata['etag'], metadata['last_modified'])
@@ -1070,6 +1087,8 @@ async def crawl_json_api_async(context: CrawlContext):
                 should_index = context.force_recrawl or not should_skip_page(url, content_hash, context.cache)
 
                 if should_index:
+                    now_iso = datetime.now().isoformat()
+
                     doc = {
                         "id": doc_id,
                         "site": context.site["name"],
@@ -1080,7 +1099,9 @@ async def crawl_json_api_async(context: CrawlContext):
                         "images": images,
                         "lang": context.site.get("lang", "fr"),
                         "timestamp": int(time.time()),
-                        "last_modified": datetime.now().isoformat()
+                        "indexed_at": now_iso,  # ← AJOUTER
+                        "last_crawled_at": now_iso,  # ← AJOUTER
+                        "content_hash": content_hash,  # ← AJOUTER
                     }
                     documents_to_index.append(doc)
                     update_cache(context.cache, url, content_hash, doc_id)

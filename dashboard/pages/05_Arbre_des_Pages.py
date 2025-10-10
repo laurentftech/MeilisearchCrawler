@@ -14,16 +14,43 @@ from src.state import is_crawler_running
 st.title("🌳 Arbre des Pages")
 st.markdown("Visualisez la structure et la fraîcheur de l'indexation Meilisearch de vos pages")
 
+# CSS personnalisé pour améliorer l'apparence des métriques
+st.markdown("""
+<style>
+    /* Supprimer le fond jaune des métriques */
+    [data-testid="stMetricValue"] {
+        background-color: transparent;
+    }
+
+    /* Améliorer l'espacement des métriques */
+    [data-testid="metric-container"] {
+        background-color: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        padding: 1rem;
+        border-radius: 0.5rem;
+    }
+
+    /* Améliorer les tooltips */
+    .stTooltipIcon {
+        color: rgba(255, 255, 255, 0.6);
+    }
+</style>
+""", unsafe_allow_html=True)
+
 meili_client = get_meili_client()
 running = is_crawler_running()
+
 
 def load_cache_urls():
     """Charge les URLs depuis le fichier de cache."""
     try:
         with open(CACHE_FILE, 'r') as f:
-            return set(json.load(f).keys())
+            cache_data = json.load(f)
+            # Exclure les clés de métadonnées
+            return {url: data for url, data in cache_data.items() if url != '_meta'}
     except (FileNotFoundError, json.JSONDecodeError):
-        return set()
+        return {}
+
 
 if not meili_client:
     st.error("❌ Connexion à Meilisearch non disponible.")
@@ -79,69 +106,96 @@ else:
             st.warning("⚠️ Aucune page trouvée dans l'index.")
         else:
             # Préparer les données
-            # On utilise un dictionnaire pour dédupliquer les URLs entre le cache et l'index
             data_map = {}
-            data = []
             now = datetime.now()
 
             # 2. Traiter les documents déjà indexés
-            for doc in documents: # type: ignore
+            for doc in documents:
                 doc_dict = doc if isinstance(doc, dict) else doc.__dict__
 
                 url = doc_dict.get('url', '')
                 site = doc_dict.get('site', 'Unknown')
                 title = doc_dict.get('title', 'Sans titre')
 
-                # IMPORTANT : On cherche la date d'indexation Meilisearch
-                # Cela peut être stocké dans différents champs selon votre crawler
-                indexed_at = doc_dict.get('indexed_at') or doc_dict.get('last_modified') or doc_dict.get('timestamp')
-                if indexed_at and isinstance(indexed_at, (int, float)):
-                    indexed_date = datetime.fromtimestamp(indexed_at)
+                # ✅ FIX PRINCIPAL : Utiliser les champs qui existent réellement
+                # Priorité : indexed_at > last_modified > timestamp
+                indexed_at = (
+                        doc_dict.get('indexed_at') or
+                        doc_dict.get('last_modified') or
+                        doc_dict.get('timestamp')
+                )
 
-                # Calculer depuis quand la page est indexée dans Meilisearch
+                # Gérer aussi last_crawled_at si disponible (pour les nouvelles versions du crawler)
+                last_crawled = doc_dict.get('last_crawled_at') or indexed_at
+                content_hash = doc_dict.get('content_hash', '')
+
+                # Calculer depuis quand la page est indexée
                 freshness_days = None
                 freshness_category = "Date inconnue"
-                freshness_color = "#6b7280"  # Gris par défaut
+                freshness_color = "#6b7280"
+
+                # Calculer depuis le dernier crawl
+                last_crawl_days = None
+                last_crawl_text = "Jamais crawlée"
 
                 if indexed_at:
                     try:
-                        if isinstance(indexed_at, str):
+                        # ✅ Gérer les 2 formats : Unix timestamp (int/float) ET ISO string
+                        if isinstance(indexed_at, (int, float)):
+                            indexed_date = datetime.fromtimestamp(indexed_at)
+                        elif isinstance(indexed_at, str):
                             indexed_date = datetime.fromisoformat(indexed_at.replace('Z', '+00:00'))
                         else:
-                            indexed_date = indexed_at
+                            indexed_date = None
 
-                        # Calculer depuis combien de temps cette page est dans l'index
-                        freshness_days = (now - indexed_date.replace(tzinfo=None)).days
+                        if indexed_date:
+                            freshness_days = (now - indexed_date.replace(tzinfo=None)).days
 
-                        if freshness_days < 1:
-                            freshness_category = "Indexé aujourd'hui"
-                            freshness_color = "#22c55e"
-                        elif freshness_days < 7:
-                            freshness_category = "Indexé cette semaine"
-                            freshness_color = "#84cc16"
-                        elif freshness_days < 30:
-                            freshness_category = "Indexé ce mois-ci"
-                            freshness_color = "#eab308"
-                        elif freshness_days < 90:
-                            freshness_category = "Indexé il y a 1-3 mois"
-                            freshness_color = "#f97316"
-                        else:
-                            freshness_category = "Indexé il y a > 3 mois"
-                            freshness_color = "#ef4444"
+                            if freshness_days < 1:
+                                freshness_category = "Indexé aujourd'hui"
+                                freshness_color = "#22c55e"
+                            elif freshness_days < 7:
+                                freshness_category = "Indexé cette semaine"
+                                freshness_color = "#84cc16"
+                            elif freshness_days < 30:
+                                freshness_category = "Indexé ce mois-ci"
+                                freshness_color = "#eab308"
+                            elif freshness_days < 90:
+                                freshness_category = "Indexé il y a 1-3 mois"
+                                freshness_color = "#f97316"
+                            else:
+                                freshness_category = "Indexé il y a > 3 mois"
+                                freshness_color = "#ef4444"
                     except Exception as e:
                         freshness_category = f"Erreur date: {str(e)[:30]}"
+
+                # ✅ NOUVEAU : Calculer depuis le dernier crawl
+                if last_crawled:
+                    try:
+                        if isinstance(last_crawled, (int, float)):
+                            crawled_date = datetime.fromtimestamp(last_crawled)
+                        elif isinstance(last_crawled, str):
+                            crawled_date = datetime.fromisoformat(last_crawled.replace('Z', '+00:00'))
+                        else:
+                            crawled_date = None
+
+                        if crawled_date:
+                            last_crawl_days = (now - crawled_date.replace(tzinfo=None)).days
+
+                            if last_crawl_days < 1:
+                                last_crawl_text = "Crawlée aujourd'hui"
+                            elif last_crawl_days < 7:
+                                last_crawl_text = f"Il y a {last_crawl_days}j"
+                            else:
+                                last_crawl_text = f"Il y a {last_crawl_days}j"
+                    except Exception:
                         pass
 
                 # Parser l'URL pour créer la hiérarchie
                 if url:
                     parsed = urlparse(url)
                     path_parts = [p for p in parsed.path.split('/') if p]
-
-                    # Nom de la page
-                    if path_parts:
-                        page_name = path_parts[-1][:40]
-                    else:
-                        page_name = "Page d'accueil"
+                    page_name = path_parts[-1][:40] if path_parts else "Page d'accueil"
 
                     data_map[url] = {
                         'site': site,
@@ -152,24 +206,42 @@ else:
                         'freshness_days': freshness_days if freshness_days is not None else 999,
                         'freshness_category': freshness_category,
                         'freshness_color': freshness_color,
-                        'indexed_at': indexed_at
+                        'indexed_at': indexed_at,
+                        'last_crawled_at': last_crawled,
+                        'last_crawl_days': last_crawl_days if last_crawl_days is not None else 999,
+                        'last_crawl_text': last_crawl_text,
+                        'content_hash': content_hash,
+                        'status': 'indexed'
                     }
 
-            # 3. Charger les URLs du cache et ajouter celles qui ne sont pas déjà dans l'index
-            cached_urls = load_cache_urls()
-            for url in cached_urls:
+            # 3. Charger les URLs du cache et ajouter celles qui ne sont pas encore indexées
+            cached_data = load_cache_urls()
+            for url, cache_info in cached_data.items():
                 if url not in data_map:
                     try:
                         parsed = urlparse(url)
-                        # Essayer d'extraire le nom du site du filtre si possible
-                        site_name = filter_site if filter_site != "Tous les sites" else parsed.netloc
+                        # Essayer d'extraire le nom du site
+                        site_name = parsed.netloc
 
                         # Appliquer le filtre de site
-                        if filter_site != "Tous les sites" and site_name not in url:
+                        if filter_site != "Tous les sites" and filter_site.lower() not in url.lower():
                             continue
 
                         path_parts = [p for p in parsed.path.split('/') if p]
                         page_name = path_parts[-1][:40] if path_parts else "Page d'accueil"
+
+                        # Vérifier si on a une date de crawl dans le cache
+                        last_crawl_timestamp = cache_info.get('last_crawl', 0) if isinstance(cache_info, dict) else 0
+                        crawl_age_days = 999
+                        crawl_text = "Date inconnue"
+
+                        if last_crawl_timestamp:
+                            crawl_date = datetime.fromtimestamp(last_crawl_timestamp)
+                            crawl_age_days = (now - crawl_date).days
+                            if crawl_age_days < 1:
+                                crawl_text = "Crawlée aujourd'hui"
+                            else:
+                                crawl_text = f"Il y a {crawl_age_days}j"
 
                         data_map[url] = {
                             'site': site_name,
@@ -177,37 +249,78 @@ else:
                             'page': page_name,
                             'url': url,
                             'title': "En attente d'indexation",
-                            'freshness_days': 9999, # Valeur très haute pour le tri
+                            'freshness_days': 9999,  # Valeur très haute pour le tri
                             'freshness_category': "En attente",
-                            'freshness_color': "#4b5563", # Gris foncé
-                            'indexed_at': None
+                            'freshness_color': "#4b5563",
+                            'indexed_at': None,
+                            'last_crawled_at': last_crawl_timestamp if last_crawl_timestamp else None,
+                            'last_crawl_days': crawl_age_days,
+                            'last_crawl_text': crawl_text,
+                            'content_hash': cache_info.get('content_hash', '') if isinstance(cache_info, dict) else '',
+                            'status': 'pending'
                         }
                     except Exception:
-                        continue # Ignorer les URLs malformées du cache
+                        continue
 
             data = list(data_map.values())
-            
+
             if not data:
                 st.warning("⚠️ Impossible de traiter les données des pages.")
             else:
                 df = pd.DataFrame(data)
 
-                # Statistiques
+                # ✅ STATISTIQUES ENRICHIES
                 total_pages = len(df)
                 st.markdown("---")
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("📄 Pages analysées", len(df))
+                col1, col2, col3, col4, col5 = st.columns(5)
+
+                col1.metric("📄 Pages analysées", total_pages)
                 col2.metric("🌐 Sites", df['site'].nunique())
 
                 avg_freshness = df[df['freshness_days'] < 999]['freshness_days'].mean()
                 if pd.notna(avg_freshness):
-                    col3.metric("📅 Ancienneté moyenne index", f"{avg_freshness:.1f} jours")
+                    col3.metric("📅 Ancienneté index", f"{avg_freshness:.0f}j")
                 else:
-                    col3.metric("📅 Ancienneté moyenne index", "N/A")
+                    col3.metric("📅 Ancienneté index", "N/A")
 
-                pending_count = len(df[df['freshness_category'] == "En attente"])
+                recent_indexed = len(df[df['freshness_days'] < 7])
+                col4.metric("🆕 Indexées (< 7j)", recent_indexed)
+
+                # ✅ NOUVEAU : Pages en attente
+                pending_count = len(df[df['status'] == 'pending'])
                 if pending_count > 0:
-                    col4.metric("⏳ Pages en attente", pending_count)
+                    col5.metric("⏳ En attente", pending_count)
+                else:
+                    # Afficher les pages crawlées récemment à la place
+                    recent_crawled = len(df[df['last_crawl_days'] < 7])
+                    col5.metric("🔍 Crawlées (< 7j)", recent_crawled)
+
+                # ✅ NOUVEAU : Alertes
+                st.markdown("---")
+                col1, col2, col3 = st.columns(3)
+
+                stale_pages = len(df[df['last_crawl_days'] > 30])
+                if stale_pages > 0:
+                    col1.metric(
+                        "⚠️ À re-crawler",
+                        stale_pages,
+                        help="Pages non visitées depuis plus de 30 jours"
+                    )
+
+                old_indexed = len(df[df['freshness_days'] > 90])
+                if old_indexed > 0:
+                    col2.metric(
+                        "🔴 Indexation ancienne",
+                        old_indexed,
+                        help="Pages indexées il y a plus de 3 mois"
+                    )
+
+                if pending_count > 0:
+                    col3.metric(
+                        "⏳ File d'attente",
+                        pending_count,
+                        help="Pages découvertes mais pas encore indexées"
+                    )
 
                 # Créer la structure hiérarchique pour Plotly
                 labels = []
@@ -217,9 +330,8 @@ else:
                 hover_texts = []
                 ids = []
 
-                # Compteur pour générer des IDs uniques
                 id_counter = 0
-                node_map = {}  # Map pour retrouver les nodes par leur chemin
+                node_map = {}
 
                 # Ajouter la racine
                 root_id = f"node_{id_counter}"
@@ -227,7 +339,7 @@ else:
                 labels.append("Toutes les pages")
                 parents.append("")
                 values.append(total_pages)
-                colors.append(30)  # Couleur neutre
+                colors.append(30)
                 hover_texts.append(f"<b>Toutes les pages</b><br>Total: {total_pages} pages")
                 ids.append(root_id)
                 node_map[""] = root_id
@@ -270,7 +382,6 @@ else:
                                     current_parent_id = folder_id
                                 else:
                                     current_parent_id = node_map[current_path]
-                                    # Incrémenter la valeur du noeud existant
                                     idx = ids.index(current_parent_id)
                                     values[idx] += 1
 
@@ -281,16 +392,21 @@ else:
                         labels.append(row['page'])
                         parents.append(current_parent_id)
                         values.append(1)
-                        
-                        if row['freshness_category'] == "En attente":
-                            colors.append(181) # Couleur spéciale pour "En attente"
-                            hover_text = f"<b>{row['url'][:60]}...</b><br>Statut: En attente d'indexation"
+
+                        # ✅ AMÉLIORATION : Hover text enrichi
+                        if row['status'] == 'pending':
+                            colors.append(181)  # Couleur spéciale pour "En attente"
+                            hover_text = (
+                                f"<b>{row['url'][:60]}...</b><br>"
+                                f"📋 Statut: En attente d'indexation<br>"
+                                f"🔄 Crawlée: {row['last_crawl_text']}"
+                            )
                         else:
                             colors.append(row['freshness_days'])
                             hover_text = (
                                 f"<b>{row['title']}</b><br>"
-                                f"Statut: {row['freshness_category']}<br>"
-                                f"Indexé il y a: {row['freshness_days']} jours<br>"
+                                f"📅 Indexé: {row['freshness_category']}<br>"
+                                f"🔄 Crawlée: {row['last_crawl_text']}<br>"
                                 f"<a href='{row['url']}'>{row['url'][:50]}...</a>"
                             )
                         hover_texts.append(hover_text)
@@ -300,9 +416,27 @@ else:
                 st.markdown("---")
                 st.subheader("🗺️ Carte Hiérarchique - Fraîcheur de l'Indexation")
 
-                st.info("💡 **Code couleur** : Vert = récent | Rouge = ancien | Gris = en attente")
+                # Instructions d'utilisation
+                with st.expander("ℹ️ Comment naviguer dans la visualisation", expanded=False):
+                    st.markdown("""
+                    ### 🖱️ Navigation
+                    - **Cliquer sur un élément** : Zoomer sur cet élément et ses enfants
+                    - **Double-cliquer** : Revenir au niveau précédent (dézoomer)
+                    - **Hover (survoler)** : Voir les détails de la page
 
-                # Palette de couleurs pour la fraîcheur (inversée pour que vert = récent)
+                    ### 🎨 Code couleur
+                    - 🟢 **Vert** : Indexé aujourd'hui ou cette semaine (< 7 jours)
+                    - 🟡 **Jaune** : Indexé ce mois-ci (< 30 jours)
+                    - 🟠 **Orange** : Indexé il y a 1-3 mois
+                    - 🔴 **Rouge** : Indexé il y a plus de 3 mois (à rafraîchir)
+                    - ⚫ **Gris foncé** : En attente d'indexation
+
+                    ### 💡 Astuce
+                    Pour revenir à la vue d'ensemble, **double-cliquez sur le titre** de la racine ou utilisez le bouton "Reset" en haut à droite du graphique.
+                    """)
+
+                st.info("💡 **Cliquez** pour zoomer | **Double-cliquez** pour dézoomer")
+
                 colorscale = [
                     [0, '#22c55e'],  # Vert (indexé aujourd'hui)
                     [0.05, '#84cc16'],  # Vert clair (< 7j)
@@ -310,7 +444,7 @@ else:
                     [0.4, '#f97316'],  # Orange (< 90j)
                     [0.6, '#ef4444'],  # Rouge (> 90j)
                     [0.8, '#991b1b'],  # Rouge foncé (> 180j)
-                    [1, '#4b5563']   # Gris pour "En attente"
+                    [1, '#4b5563']  # Gris foncé pour "En attente"
                 ]
 
                 if viz_type == "TreeMap":
@@ -322,9 +456,9 @@ else:
                         marker=dict(
                             colors=colors,
                             colorscale=colorscale,
-                            cmid=45,  # Centre de l'échelle
-                            cmin=0, 
-                            cmax=181, # Ajusté pour inclure la couleur "en attente"
+                            cmid=45,
+                            cmin=0,
+                            cmax=181,
                             colorbar=dict(
                                 title="Jours depuis<br>indexation",
                                 thickness=20,
@@ -337,8 +471,18 @@ else:
                         customdata=hover_texts,
                         hovertemplate='%{customdata}<br>Taille: %{value}<extra></extra>',
                         textposition="middle center",
+                        branchvalues="total",  # Améliore le calcul des tailles
                     ))
-                    fig.update_layout(height=800, margin=dict(t=10, l=10, r=10, b=10))
+                    fig.update_layout(
+                        height=800,
+                        margin=dict(t=50, l=10, r=10, b=10),
+                        title={
+                            'text': "💡 Cliquez pour zoomer | Double-cliquez pour revenir en arrière",
+                            'x': 0.5,
+                            'xanchor': 'center',
+                            'font': {'size': 14, 'color': '#666'}
+                        }
+                    )
 
                 elif viz_type == "Sunburst":
                     fig = go.Figure(go.Sunburst(
@@ -350,7 +494,7 @@ else:
                             colors=colors,
                             colorscale=colorscale,
                             cmid=45,
-                            cmin=0, 
+                            cmin=0,
                             cmax=181,
                             colorbar=dict(
                                 title="Jours depuis<br>indexation",
@@ -362,8 +506,18 @@ else:
                         ),
                         customdata=hover_texts,
                         hovertemplate='%{customdata}<br>Taille: %{value}<extra></extra>',
+                        branchvalues="total",
                     ))
-                    fig.update_layout(height=800, margin=dict(t=10, l=10, r=10, b=10))
+                    fig.update_layout(
+                        height=800,
+                        margin=dict(t=50, l=10, r=10, b=10),
+                        title={
+                            'text': "💡 Cliquez pour zoomer | Double-cliquez au centre pour revenir",
+                            'x': 0.5,
+                            'xanchor': 'center',
+                            'font': {'size': 14, 'color': '#666'}
+                        }
+                    )
 
                 else:  # Icicle
                     fig = go.Figure(go.Icicle(
@@ -375,7 +529,7 @@ else:
                             colors=colors,
                             colorscale=colorscale,
                             cmid=45,
-                            cmin=0, 
+                            cmin=0,
                             cmax=181,
                             colorbar=dict(
                                 title="Jours depuis<br>indexation",
@@ -387,16 +541,46 @@ else:
                         ),
                         customdata=hover_texts,
                         hovertemplate='%{customdata}<br>Taille: %{value}<extra></extra>',
+                        branchvalues="total",
                     ))
-                    fig.update_layout(height=800, margin=dict(t=10, l=10, r=10, b=10))
+                    fig.update_layout(
+                        height=800,
+                        margin=dict(t=50, l=10, r=10, b=10),
+                        title={
+                            'text': "💡 Cliquez pour zoomer | Double-cliquez en haut pour revenir",
+                            'x': 0.5,
+                            'xanchor': 'center',
+                            'font': {'size': 14, 'color': '#666'}
+                        }
+                    )
 
-                st.plotly_chart(fig, use_container_width=True)
+                # Configuration commune pour améliorer l'interactivité
+                fig.update_layout(
+                    hoverlabel=dict(
+                        bgcolor="white",
+                        font_size=13,
+                        font_family="Arial"
+                    )
+                )
+
+                st.plotly_chart(fig, use_container_width=True, config={
+                    'displayModeBar': True,
+                    'displaylogo': False,
+                    'modeBarButtonsToAdd': ['resetScale2d'],
+                    'modeBarButtonsToRemove': ['lasso2d', 'select2d'],
+                    'toImageButtonOptions': {
+                        'format': 'png',
+                        'filename': f'arbre_pages_{datetime.now().strftime("%Y%m%d")}',
+                        'height': 1000,
+                        'width': 1400,
+                        'scale': 2
+                    }
+                })
 
                 # Distribution par fraîcheur
                 st.markdown("---")
                 st.subheader("📊 Distribution par Ancienneté d'Indexation")
 
-                # Ordre des catégories
                 category_order = [
                     "Indexé aujourd'hui",
                     "Indexé cette semaine",
@@ -407,7 +591,6 @@ else:
                     "En attente"
                 ]
 
-                # Palette de couleurs fixe par catégorie
                 color_map = {
                     "Indexé aujourd'hui": "#22c55e",
                     "Indexé cette semaine": "#84cc16",
@@ -442,50 +625,91 @@ else:
                 )
                 st.plotly_chart(fig_freshness, use_container_width=True)
 
-                # Tableau des pages les plus anciennes
+                # ✅ TABLEAUX ENRICHIS
                 st.markdown("---")
                 col1, col2 = st.columns(2)
 
                 with col1:
-                    st.subheader("⏰ Pages à Ré-indexer (les plus anciennes)")
-                    old_pages = df[df['freshness_days'] < 9999].nlargest(10, 'freshness_days')[
-                        ['title', 'site', 'freshness_days', 'freshness_category', 'indexed_at']
+                    st.subheader("⏰ Pages à Re-crawler en Priorité")
+                    st.caption("Pages anciennes ou non visitées depuis longtemps")
+
+                    # Combiner ancienneté du crawl ET ancienneté d'indexation
+                    df['priority_score'] = df['last_crawl_days'] * 0.7 + df['freshness_days'] * 0.3
+
+                    old_pages = df[df['freshness_days'] < 9999].nlargest(10, 'priority_score')[
+                        ['title', 'site', 'last_crawl_days', 'freshness_days', 'last_crawl_text', 'status']
                     ]
+
                     if not old_pages.empty:
-                        old_pages.columns = ['Titre', 'Site', 'Jours', 'Statut', 'Date indexation']
+                        old_pages.columns = ['Titre', 'Site', 'Jours crawl', 'Jours index', 'Dernière visite', 'Statut']
+
+
+                        def highlight_priority(row):
+                            if row['Jours crawl'] > 90:
+                                return ['background-color: rgba(239, 68, 68, 0.1)'] * len(row)
+                            elif row['Jours crawl'] > 30:
+                                return ['background-color: rgba(251, 191, 36, 0.1)'] * len(row)
+                            return [''] * len(row)
+
+
+                        styled_df = old_pages.style.format({
+                            'Jours crawl': '{:.0f}',
+                            'Jours index': '{:.0f}',
+                        }).apply(highlight_priority, axis=1)
+
                         st.dataframe(
-                            old_pages.style.format({'Jours': '{:.0f}'}),
+                            styled_df,
                             use_container_width=True,
                             hide_index=True,
                             height=400
                         )
                     else:
-                        st.info("Aucune page avec date d'indexation")
+                        st.info("✅ Toutes les pages sont à jour !")
 
                 with col2:
-                    st.subheader("🆕 Pages Récemment Indexées")
-                    recent_pages = df[df['freshness_days'] < 9999].nsmallest(10, 'freshness_days')[
-                        ['title', 'site', 'freshness_days', 'freshness_category', 'indexed_at']
+                    st.subheader("🆕 Pages Récemment Crawlées")
+                    st.caption("Pages visitées récemment par le crawler")
+
+                    recent_pages = df[df['last_crawl_days'] < 999].nsmallest(10, 'last_crawl_days')[
+                        ['title', 'site', 'last_crawl_days', 'freshness_days', 'last_crawl_text', 'status']
                     ]
+
                     if not recent_pages.empty:
-                        recent_pages.columns = ['Titre', 'Site', 'Jours', 'Statut', 'Date indexation']
+                        recent_pages.columns = ['Titre', 'Site', 'Jours crawl', 'Jours index', 'Dernière visite',
+                                                'Statut']
+
+
+                        def highlight_fresh(row):
+                            if row['Jours crawl'] < 1:
+                                return ['background-color: rgba(34, 197, 94, 0.1)'] * len(row)
+                            elif row['Jours crawl'] < 7:
+                                return ['background-color: rgba(132, 204, 22, 0.1)'] * len(row)
+                            return [''] * len(row)
+
+
+                        styled_df = recent_pages.style.format({
+                            'Jours crawl': '{:.0f}',
+                            'Jours index': '{:.0f}',
+                        }).apply(highlight_fresh, axis=1)
+
                         st.dataframe(
-                            recent_pages.style.format({'Jours': '{:.0f}'}),
+                            styled_df,
                             use_container_width=True,
                             hide_index=True,
                             height=400
                         )
                     else:
-                        st.info("Aucune page avec date d'indexation")
+                        st.info("Aucune page crawlée récemment")
 
                 # Option d'export
                 st.markdown("---")
-                csv = df[['title', 'url', 'site', 'freshness_days', 'freshness_category', 'indexed_at']].to_csv(
+                csv = df[['title', 'url', 'site', 'freshness_days', 'freshness_category', 'last_crawl_text', 'status',
+                          'indexed_at']].to_csv(
                     index=False)
                 st.download_button(
-                    label="📥 Exporter les données avec dates d'indexation (CSV)",
+                    label="📥 Exporter les données complètes (CSV)",
                     data=csv,
-                    file_name=f"indexation_freshness_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    file_name=f"indexation_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv"
                 )
 
