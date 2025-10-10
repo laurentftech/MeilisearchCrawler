@@ -64,21 +64,42 @@ else:
         field_distribution = {}
         if hasattr(stats, 'field_distribution') and stats.field_distribution:
             try:
-                field_distribution = dict(stats.field_distribution)
-            except TypeError:
+                # Convertir field_distribution en dictionnaire simple
+                raw_field_dist = dict(stats.field_distribution)
+                # S'assurer que toutes les valeurs sont des entiers
+                field_distribution = {}
+                for k, v in raw_field_dist.items():
+                    if isinstance(v, (int, float)):
+                        field_distribution[k] = int(v)
+                    elif isinstance(v, dict):
+                        # Si c'est un dictionnaire imbriqué, prendre la somme ou ignorer
+                        # Selon la structure de MeiliSearch, adapter ici
+                        pass
+            except (TypeError, AttributeError, ValueError) as e:
+                st.warning(f"⚠️ Erreur lors du traitement de field_distribution: {e}")
                 field_distribution = {}
 
         if num_docs > 0:
-            estimated_size_mb = (num_docs * 1.5) / 1024 # Rough estimate
+            estimated_size_mb = (num_docs * 1.5) / 1024  # Rough estimate
             avg_doc_size_kb = 1.5
             col1.metric(t("stats.estimated_size"), f"{estimated_size_mb:.2f} MB")
             col4.metric(t("stats.avg_size_per_doc"), f"{avg_doc_size_kb:.2f} KB")
 
             if field_distribution:
-                total_fields = sum(field_distribution.values())
-                avg_fields_per_doc = total_fields / num_docs
-                col2.metric(t("stats.total_fields"), f"{total_fields:,}")
-                col3.metric(t("stats.avg_fields_per_doc"), f"{avg_fields_per_doc:.1f}")
+                try:
+                    # Calculer le total uniquement avec des valeurs numériques
+                    total_fields = sum(v for v in field_distribution.values() if isinstance(v, (int, float)))
+                    if total_fields > 0:
+                        avg_fields_per_doc = total_fields / num_docs
+                        col2.metric(t("stats.total_fields"), f"{total_fields:,}")
+                        col3.metric(t("stats.avg_fields_per_doc"), f"{avg_fields_per_doc:.1f}")
+                    else:
+                        col2.metric(t("stats.total_fields"), "N/A")
+                        col3.metric(t("stats.avg_fields_per_doc"), "N/A")
+                except Exception as e:
+                    st.warning(f"⚠️ Erreur calcul champs: {e}")
+                    col2.metric(t("stats.total_fields"), "N/A")
+                    col3.metric(t("stats.avg_fields_per_doc"), "N/A")
             else:
                 col2.metric(t("stats.total_fields"), "N/A")
                 col3.metric(t("stats.avg_fields_per_doc"), "N/A")
@@ -92,21 +113,31 @@ else:
         if field_distribution and num_docs > 0:
             st.markdown("---")
             st.subheader(t("stats.field_distribution"))
-            df_fields = pd.DataFrame([
-                {t("stats.field"): k, t("stats.occurrences"): v, t("stats.presence"): (v / num_docs) * 100}
-                for k, v in sorted(field_distribution.items(), key=lambda item: item[1], reverse=True)
-            ])
 
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                fig = px.bar(df_fields.head(10), y=t("stats.field"), x=t("stats.occurrences"), orientation='h',
-                               title=t("stats.top_10_fields_chart"), text=t("stats.occurrences"),
-                               color=t("stats.presence"), color_continuous_scale='Viridis')
-                fig.update_layout(height=400)
-                st.plotly_chart(fig, use_container_width=True)
-            with col2:
-                st.dataframe(df_fields.style.format({t("stats.occurrences"): '{:,.0f}', t("stats.presence"): '{:.1f}%'}),
-                               use_container_width=True, hide_index=True, height=400)
+            # Filtrer uniquement les valeurs numériques pour le DataFrame
+            valid_fields = {k: v for k, v in field_distribution.items() if isinstance(v, (int, float))}
+
+            if valid_fields:
+                df_fields = pd.DataFrame([
+                    {
+                        t("stats.field"): k,
+                        t("stats.occurrences"): int(v),
+                        t("stats.presence"): (int(v) / num_docs) * 100
+                    }
+                    for k, v in sorted(valid_fields.items(), key=lambda item: item[1], reverse=True)
+                ])
+
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    fig = px.bar(df_fields.head(10), y=t("stats.field"), x=t("stats.occurrences"), orientation='h',
+                                 title=t("stats.top_10_fields_chart"), text=t("stats.occurrences"),
+                                 color=t("stats.presence"), color_continuous_scale='Viridis')
+                    fig.update_layout(height=400)
+                    st.plotly_chart(fig, use_container_width=True)
+                with col2:
+                    st.dataframe(
+                        df_fields.style.format({t("stats.occurrences"): '{:,.0f}', t("stats.presence"): '{:.1f}%'}),
+                        use_container_width=True, hide_index=True, height=400)
 
         # Document Distribution by Site
         st.markdown("---")
@@ -120,7 +151,8 @@ else:
 
                 col1, col2 = st.columns([2, 1])
                 with col1:
-                    fig = px.pie(df_facets, values=t("stats.documents"), names='Site', title=t("stats.pie_chart_title"), hole=0.4)
+                    fig = px.pie(df_facets, values=t("stats.documents"), names='Site', title=t("stats.pie_chart_title"),
+                                 hole=0.4)
                     fig.update_traces(textposition='inside', textinfo='percent+label')
                     st.plotly_chart(fig, use_container_width=True)
                 with col2:
@@ -131,6 +163,12 @@ else:
 
     except Exception as e:
         st.error(t("stats.error_fetch_stats").format(e=e))
+        # Afficher les détails de l'erreur en mode debug
+        with st.expander("🔍 Détails de l'erreur"):
+            st.code(str(e))
+            import traceback
+
+            st.code(traceback.format_exc())
 
 # Auto-refresh
 if running:
