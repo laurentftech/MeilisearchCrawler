@@ -1,9 +1,11 @@
 import streamlit as st
+import os
 
 from src.state import is_crawler_running
 from src.utils import load_cache_stats
 from src.meilisearch_client import get_meili_client
 from src.config import INDEX_NAME
+from src.i18n import get_translator
 
 # =======================
 #  Configuration & Page
@@ -15,28 +17,31 @@ st.set_page_config(
 )
 
 # =======================
+#  Internationalization (i18n)
+# =======================
+
+AVAILABLE_LANGUAGES = {
+    "en": "English",
+    "fr": "Français"
+}
+
+# Initialiser la langue dans l'état de la session si elle n'existe pas
+if 'lang' not in st.session_state:
+    st.session_state.lang = "fr"  # Langue par défaut
+
+# Créer la fonction de traduction
+t = get_translator(st.session_state.lang)
+
+
+# =======================
 #  Custom CSS
 # =======================
 st.markdown("""
 <style>
-    /* General metrics */
-    .st-emotion-cache-1ht1j8u {
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        border-radius: 0.5rem;
-        padding: 1rem;
-    }
-    /* Sidebar metrics */
-    .st-emotion-cache-1gwan2j {
-        border-top: 1px solid rgba(255, 255, 255, 0.2);
-        padding-top: 1rem;
-        margin-top: 1rem;
-    }
-    /* Custom status boxes */
     .error-box, .success-box, .warning-box {
         padding: 12px; margin: 8px 0; border-radius: 6px; color: inherit;
     }
     .error-box { background-color: rgba(239, 68, 68, 0.1); border-left: 4px solid #ef4444; }
-    .error-box small { color: #ef4444; font-weight: 600; }
     .success-box { background-color: rgba(34, 197, 94, 0.1); border-left: 4px solid #22c55e; }
     .warning-box { background-color: rgba(251, 191, 36, 0.1); border-left: 4px solid #fbbf24; }
 </style>
@@ -48,59 +53,69 @@ st.markdown("""
 # =======================
 with st.sidebar:
     st.image("https://raw.githubusercontent.com/meilisearch/meilisearch/main/assets/logo.svg", width=100)
-    st.title("Crawler Dashboard")
+    st.title(t('dashboard_title'))
+
+    # Sélecteur de langue avec drapeaux
+    lang_options = {
+        "en": "🇬🇧 English",
+        "fr": "🇫🇷 Français"
+    }
+    selected_lang_code = st.selectbox(
+        "Language",
+        options=list(lang_options.keys()),
+        format_func=lambda code: lang_options[code],
+        index=list(lang_options.keys()).index(st.session_state.lang)
+    )
+
+    if selected_lang_code != st.session_state.lang:
+        st.session_state.lang = selected_lang_code
+        st.rerun()
 
     st.markdown("---")
 
-    # Crawler Status
+    # Métriques de la barre latérale
     running = is_crawler_running()
-    st.metric("Statut du Crawler", "🟢 Actif" if running else "🔴 Arrêté")
+    st.metric(t('crawler_status'), f"🟢 {t('active')}" if running else f"🔴 {t('stopped')}")
 
-    # Meilisearch Info
     meili_client = get_meili_client()
     if meili_client:
         try:
-            index_ref = meili_client.index(INDEX_NAME)
-            stats = index_ref.get_stats()
+            stats = meili_client.index(INDEX_NAME).get_stats()
             num_docs = getattr(stats, 'number_of_documents', 0)
-            st.metric("Documents dans Meilisearch", f"{num_docs:,}")
+            st.metric(t('meilisearch_docs'), f"{num_docs:,}")
         except Exception:
-            st.metric("Documents dans Meilisearch", "N/A")
+            st.metric(t('meilisearch_docs'), "N/A")
 
-    # Cache Info
     cache_stats = load_cache_stats()
     if cache_stats:
-        st.metric("URLs en Cache", f"{cache_stats['total_urls']:,}")
+        st.metric(t('cached_urls'), f"{cache_stats['total_urls']:,}")
 
     st.markdown("---")
-    st.caption("Navigation principale ci-dessus.")
 
 # =======================
 #  Main Welcome Page
 # =======================
-
-st.title("🕸️ Bienvenue sur le Dashboard MeiliSearchCrawler")
-st.markdown("Utilisez la navigation dans la barre latérale pour accéder aux différentes sections.")
-
-st.info("**👈 Sélectionnez une page pour commencer.**", icon="💡")
+st.title(t('welcome_title'))
+st.markdown(t('welcome_subtitle'))
+st.info(t('welcome_info'), icon="💡")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("Pages Disponibles")
-    st.markdown("""
-    - **🏠 Vue d'ensemble**: Suivez la progression des crawls en temps réel.
-    - **🔧 Contrôles**: Démarrez, arrêtez le crawler et gérez le cache.
-    - **🔍 Recherche**: Testez des requêtes sur votre index Meilisearch.
-    - **📊 Statistiques**: Analysez la distribution des documents et des champs.
-    - **🌳 Arbre des Pages**: Visualisez la structure et la fraîcheur des pages indexées.
-    - **⚙️ Configuration**: Modifiez la configuration des sites à crawler.
-    - **🪵 Logs**: Consultez les logs détaillés du crawler.
+    st.subheader(t('available_pages'))
+    st.markdown(f"""
+    {t('page_overview')}
+    {t('page_controls')}
+    {t('page_search')}
+    {t('page_stats')}
+    {t('page_tree')}
+    {t('page_config')}
+    {t('page_logs')}
     """)
 
 with col2:
-    st.subheader("Statut Actuel")
+    st.subheader(t('current_status'))
     if running:
-        st.success("**Le crawler est actuellement en cours d'exécution.**\n\nVous pouvez suivre sa progression dans la page `Vue d'ensemble`.")
+        st.success(t('status_running'))
     else:
-        st.warning("**Le crawler est actuellement arrêté.**\n\nAllez dans la page `Contrôles` pour le démarrer.")
+        st.warning(t('status_stopped'))

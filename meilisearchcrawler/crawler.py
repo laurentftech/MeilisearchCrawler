@@ -1,5 +1,5 @@
 # ---------------------------
-# KidSearch Crawler
+# KidSearch Crawler - Version Complète
 # ---------------------------
 import yaml
 import aiohttp
@@ -24,35 +24,26 @@ from tqdm.asyncio import tqdm
 from tqdm import tqdm as tqdm_sync
 import trafilatura
 
+
 # ---------------------------
 # Project Structure Setup
 # ---------------------------
 def get_project_root():
-    """Retourne le chemin racine du projet, que le script soit compilé ou non."""
     if getattr(sys, 'frozen', False):
-        # Si l'application est compilée (frozen) par PyInstaller
         return os.path.dirname(sys.executable)
     else:
-        # meilisearchcrawler/crawler.py -> project root
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 PROJECT_ROOT = get_project_root()
 DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
 LOGS_DIR = os.path.join(DATA_DIR, 'logs')
 CONFIG_DIR = os.path.join(PROJECT_ROOT, 'config')
 
-# Créer les répertoires de données et de logs si nécessaire
 os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# ---------------------------
-# Logger
-# ---------------------------
 LOG_FILE_PATH = os.path.join(LOGS_DIR, 'crawler.log')
-
-# ---------------------------
-# Charger les variables d'environnement
-# ---------------------------
 load_dotenv(os.path.join(PROJECT_ROOT, '.env'))
 
 logging.basicConfig(
@@ -84,21 +75,14 @@ class Config:
     MAX_CONNECTIONS = int(os.getenv('MAX_CONNECTIONS', 100))
 
     GLOBAL_EXCLUDE_PATTERNS = [
-        # Actions utilisateur
         '/login', '/logout', '/signin', '/signup', '/register',
-        '/cart', '/checkout', '/account',
-        # Actions techniques
-        '/share', '/print', '/cdn-cgi/',
-        # CMS / API
+        '/cart', '/checkout', '/account', '/share', '/print', '/cdn-cgi/',
         '/wp-admin/', '/wp-json/', '?rest_route=',
     ]
 
 
 config = Config()
 
-# ---------------------------
-# Validation
-# ---------------------------
 if not config.MEILI_URL or not config.MEILI_KEY:
     logger.error("❌ Les variables d'environnement MEILI_URL et MEILI_KEY doivent être définies.")
     exit(1)
@@ -116,18 +100,15 @@ except Exception as e:
 
 
 def update_meilisearch_settings(index):
-    """Met à jour les paramètres de l'index MeiliSearch."""
     logger.info("⚙️ Mise à jour des paramètres MeiliSearch...")
     settings = {
         'searchableAttributes': ['title', 'excerpt', 'content', 'site', 'images.alt'],
         'displayedAttributes': [
             'title', 'url', 'site', 'images', 'timestamp', 'excerpt',
-            'content', 'lang', 'indexed_at', 'last_crawled_at', 'content_hash'  # ← AJOUTER
+            'content', 'lang', 'indexed_at', 'last_crawled_at', 'content_hash'
         ],
-        'filterableAttributes': [
-            'site', 'timestamp', 'lang', 'indexed_at', 'last_crawled_at'  # ← AJOUTER
-        ],
-        'sortableAttributes': ['timestamp', 'indexed_at', 'last_crawled_at'],  # ← AJOUTER
+        'filterableAttributes': ['site', 'timestamp', 'lang', 'indexed_at', 'last_crawled_at'],
+        'sortableAttributes': ['timestamp', 'indexed_at', 'last_crawled_at'],
         'rankingRules': ['words', 'typo', 'proximity', 'attribute', 'sort', 'exactness']
     }
     try:
@@ -171,7 +152,7 @@ except Exception as e:
 
 
 # ---------------------------
-# Cache et indexation incrémentale
+# Cache
 # ---------------------------
 def load_cache() -> Dict:
     if os.path.exists(config.CACHE_FILE):
@@ -180,13 +161,11 @@ def load_cache() -> Dict:
         try:
             with open(config.CACHE_FILE, 'r', encoding='utf-8') as f:
                 cache = json.load(f)
-                # Assurer la structure meta
                 if '_meta' not in cache:
                     cache['_meta'] = {'crawls': {}}
                 if 'crawls' not in cache['_meta']:
                     cache['_meta']['crawls'] = {}
 
-                # Vérifier les crawls incomplets
                 incomplete_sites = []
                 for site_name, crawl_info in cache['_meta']['crawls'].items():
                     if not crawl_info.get('completed', False):
@@ -194,24 +173,19 @@ def load_cache() -> Dict:
 
                 if incomplete_sites:
                     logger.warning(f"⚠️ Crawls incomplets détectés pour: {', '.join(incomplete_sites)}")
-                    logger.warning(f"   Ces pages seront re-crawlées automatiquement")
-
-                    # Invalider les URLs de ces sites
                     urls_to_remove = []
                     for url in list(cache.keys()):
                         if url == '_meta':
                             continue
                         for site_name in incomplete_sites:
                             crawl_info = cache['_meta']['crawls'][site_name]
-                            if 'domain' in crawl_info:
-                                if crawl_info['domain'] in url:
-                                    urls_to_remove.append(url)
-                                    break
+                            if 'domain' in crawl_info and crawl_info['domain'] in url:
+                                urls_to_remove.append(url)
+                                break
 
                     for url in urls_to_remove:
                         del cache[url]
 
-                    # Supprimer les entrées de crawls incomplets
                     for site_name in incomplete_sites:
                         del cache['_meta']['crawls'][site_name]
 
@@ -232,7 +206,6 @@ def save_cache(cache: Dict):
 
 
 def start_crawl_session(cache: Dict, site_name: str, domain: str):
-    """Marque le début d'un crawl."""
     cache['_meta']['crawls'][site_name] = {
         'started': datetime.now().isoformat(),
         'completed': False,
@@ -242,13 +215,11 @@ def start_crawl_session(cache: Dict, site_name: str, domain: str):
 
 
 def complete_crawl_session(cache: Dict, site_name: str, completed: bool = True, resume_urls: Optional[Set[str]] = None):
-    """Marque la fin réussie d'un crawl."""
     if site_name in cache['_meta']['crawls']:
         cache['_meta']['crawls'][site_name]['completed'] = completed
         cache['_meta']['crawls'][site_name]['finished'] = datetime.now().isoformat()
         if resume_urls:
             cache['_meta']['crawls'][site_name]['resume_from'] = list(resume_urls)
-
         save_cache(cache)
 
 
@@ -282,7 +253,7 @@ def update_cache(cache: Dict, url: str, content_hash: str, doc_id: str, etag: st
 
 
 # ---------------------------
-# Gestion de robots.txt
+# Robots.txt
 # ---------------------------
 robot_parsers: Dict[str, RobotFileParser] = {}
 
@@ -310,7 +281,6 @@ def get_robot_parser(url: str) -> Optional[RobotFileParser]:
 
 
 def get_crawl_delay(url: str) -> float:
-    """Récupère le délai de crawl depuis robots.txt."""
     parser = get_robot_parser(url)
     if parser:
         delay = parser.crawl_delay(config.USER_AGENT)
@@ -402,29 +372,22 @@ def remove_common_patterns(text: str) -> str:
 
 
 def extract_main_content(soup: BeautifulSoup, html_string: str, site_config: Dict) -> str:
-    # Stratégie 1: Sélecteur manuel (le plus fiable)
     site_selector = site_config.get('selector')
     if site_selector:
         content_element = soup.select_one(site_selector)
         if content_element:
             return content_element.get_text(separator=' ', strip=True)
 
-    # Stratégie 2: Utiliser trafilatura, une librairie spécialisée
     extracted_text = trafilatura.extract(html_string, include_comments=False, include_tables=False)
     if extracted_text and len(extracted_text) > 250:
         return extracted_text
 
-    # Stratégie 3: Heuristique maison comme solution de secours
-    logger.debug("   (Fallback sur l'heuristique maison pour l'extraction de contenu)")
+    logger.debug("   (Fallback sur l'heuristique maison)")
     best_candidate = None
     best_candidate_len = 0
 
-    for selector in [
-        'article', 'main', '[role="main"]',
-        '.post-content', '.entry-content', '.article-content',
-        '.content-main', '.main-content',
-        '#content', '.content', '.mw-parser-output'
-    ]:
+    for selector in ['article', 'main', '[role="main"]', '.post-content', '.entry-content', '.article-content',
+                     '.content-main', '.main-content', '#content', '.content', '.mw-parser-output']:
         content_elem = soup.select_one(selector)
         if content_elem:
             temp_elem = BeautifulSoup(str(content_elem), 'lxml')
@@ -433,56 +396,40 @@ def extract_main_content(soup: BeautifulSoup, html_string: str, site_config: Dic
                 best_candidate = content_elem
                 best_candidate_len = current_len
 
-    # Si aucun candidat idéal n'est trouvé ou s'il est trop court,
-    # on utilise une heuristique pour trouver le plus grand bloc de texte.
-    if not best_candidate or best_candidate_len < 250: # Seuil relevé pour plus de robustesse
+    if not best_candidate or best_candidate_len < 250:
         if soup.body:
             all_elements = soup.body.find_all(True, recursive=True)
             max_len = 0
-            best_elem = soup.body  # Fallback sur le body
-
+            best_elem = soup.body
             for elem in all_elements:
-                # Ignorer les balises qui ne contiennent généralement pas de contenu principal
                 if elem.name in ['nav', 'header', 'footer', 'aside', 'script', 'style', 'a', 'form']:
                     continue
-
                 text_len = len(elem.get_text(strip=True))
                 if text_len > max_len:
                     max_len = text_len
                     best_elem = elem
-
             target_element = best_elem
         else:
-            return "" # Pas de body, pas de contenu
+            return ""
     else:
-        target_element = best_candidate # On utilise le meilleur candidat trouvé via les sélecteurs
+        target_element = best_candidate
 
     for tag in target_element.select(
-            'nav, header, footer, aside, form, script, style, iframe, '
-            '.sidebar, .widget, .social-share, .related-posts, '
-            '.comments, .comment, .advertisement, .ad, .ads, '
-            '[class*="share"], [class*="related"], [class*="sidebar"], '
-            '[class*="widget"], [class*="promo"], [class*="cookie"], '
-            '[aria-hidden="true"]'
-    ):
+            'nav, header, footer, aside, form, script, style, iframe, .sidebar, .widget, .social-share, .related-posts, .comments, .comment, .advertisement, .ad, .ads, [class*="share"], [class*="related"], [class*="sidebar"], [class*="widget"], [class*="promo"], [class*="cookie"], [aria-hidden="true"]'):
         tag.decompose()
 
     return target_element.get_text(separator=' ', strip=True)
 
+
 def get_title(soup: BeautifulSoup) -> str:
-    """Extrait le titre de la page de manière robuste."""
-    # Essayer le titre OpenGraph en premier, souvent plus propre
     og_title = soup.find('meta', property='og:title')
     if og_title and og_title.get('content'):
         return og_title['content'].strip()
-
-    # Essayer le titre de la balise <title>
     if soup.title and soup.title.string:
         return soup.title.string.strip()
-
-    # En dernier recours, chercher le premier <h1>
     h1 = soup.find('h1')
     return h1.get_text(strip=True) if h1 else "Sans titre"
+
 
 def create_excerpt(content: str, max_length: int = 250) -> str:
     if not content:
@@ -517,7 +464,6 @@ def clean_text(text: str, max_length: int = 3000) -> str:
 def extract_images(soup: BeautifulSoup, base_url: str, max_images: int = 5) -> List[Dict]:
     images = []
     seen_urls: Set[str] = set()
-
     for img in soup.select('img'):
         if len(images) >= max_images:
             break
@@ -543,7 +489,7 @@ def extract_images(soup: BeautifulSoup, base_url: str, max_images: int = 5) -> L
 
 
 # ---------------------------
-# Statistiques
+# Stats
 # ---------------------------
 class CrawlStats:
     def __init__(self, site_name: str):
@@ -552,7 +498,7 @@ class CrawlStats:
         self.pages_visited = 0
         self.pages_indexed = 0
         self.pages_not_indexed = 0
-        self.pages_not_modified = 0  # Nouvelles stats
+        self.pages_not_modified = 0
         self.discovered_but_not_visited = 0
         self.errors = 0
         self.redirects = 0
@@ -562,10 +508,9 @@ class CrawlStats:
     async def increment(self, attr: str, value: int = 1):
         async with self.lock:
             setattr(self, attr, getattr(self, attr) + value)
-            # Mettre à jour la barre de progression uniquement pour les pages visitées
             if self.pbar and attr == 'pages_visited':
                 self.pbar.update(value)
-            if self.pbar: # Mettre à jour les stats affichées à chaque fois
+            if self.pbar:
                 self.pbar.set_postfix({
                     'indexées': self.pages_indexed,
                     'non-indexées': self.pages_not_indexed,
@@ -581,18 +526,17 @@ class CrawlStats:
         logger.info(f"⏱️  Durée: {duration:.2f}s")
         logger.info(f"🌐 Pages visitées: {self.pages_visited}")
         logger.info(f"✅ Pages indexées: {self.pages_indexed}")
-        logger.info(f"⏭️  Pages non indexées (doublon, cache, etc.): {self.pages_not_indexed}")
+        logger.info(f"⏭️  Pages non indexées: {self.pages_not_indexed}")
         logger.info(f"♻️  Pages non modifiées (304): {self.pages_not_modified}")
-        logger.info(f"🗺️  Liens découverts (non visités): {self.discovered_but_not_visited}")
+        logger.info(f"🗺️  Liens découverts: {self.discovered_but_not_visited}")
         logger.info(f"❌ Erreurs: {self.errors}")
         if self.pages_visited > 0:
             logger.info(f"⚡ Vitesse: {self.pages_visited / duration:.2f} pages/s")
         logger.info(f"{'=' * 60}\n")
 
-# ---------------------------
-# Status de Crawl Global
-# ---------------------------
+
 STATUS_FILE = os.path.join(DATA_DIR, "status.json")
+
 
 class GlobalCrawlStatus:
     def __init__(self, total_sites: int):
@@ -604,7 +548,7 @@ class GlobalCrawlStatus:
         self.active_site = None
         self.pages_indexed = 0
         self.errors = 0
-        self.stats_by_site = [] # Pour stocker les stats détaillées
+        self.stats_by_site = []
 
     def to_dict(self) -> Dict:
         duration = 0
@@ -612,7 +556,6 @@ class GlobalCrawlStatus:
             duration = self.end_time - self.start_time
         elif self.start_time:
             duration = time.time() - self.start_time
-
         return {
             "running": self.running,
             "timestamp": datetime.now().isoformat(),
@@ -623,16 +566,15 @@ class GlobalCrawlStatus:
             "errors": self.errors,
             "last_crawl_duration_sec": round(duration, 2),
             "stats": self.stats_by_site,
-            "queue_length": 0 # Placeholder
+            "queue_length": 0
         }
 
     def save(self):
-        """Sauvegarde le statut actuel dans status.json."""
         try:
             with open(STATUS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.to_dict(), f, ensure_ascii=False, indent=4)
         except Exception as e:
-            logger.error(f"❌ Échec de la sauvegarde du statut: {e}")
+            logger.error(f"❌ Échec sauvegarde statut: {e}")
 
     def start(self):
         self.running = True
@@ -663,11 +605,8 @@ class GlobalCrawlStatus:
         self.active_site = None
         self.save()
 
-# ---------------------------
-# Contexte de Crawl
-# ---------------------------
+
 class CrawlContext:
-    """Regroupe tous les paramètres d'une session de crawl."""
     def __init__(self, site: Dict, force_recrawl: bool, cache: Dict):
         self.site = site
         self.force_recrawl = force_recrawl
@@ -681,9 +620,6 @@ class CrawlContext:
         self.max_depth = site.get("depth", 3)
 
 
-# ---------------------------
-# Rate Limiter Async
-# ---------------------------
 class RateLimiter:
     def __init__(self, delay: float):
         self.delay = delay
@@ -699,25 +635,9 @@ class RateLimiter:
             self.last_request = time.time()
 
 
-async def index_documents_stream(documents: List[Dict], site_name: str):
-    """Indexe les documents par streaming pour optimiser la mémoire."""
-    if not documents:
-        return
-
-    try:
-        # Indexer directement sans tout garder en mémoire
-        index.add_documents(documents)
-        logger.debug(f"📦 Batch de {len(documents)} documents indexé pour {site_name}")
-    except Exception as e:
-        logger.error(f"❌ Erreur indexation batch pour {site_name}: {e}")
-
-
 async def fetch_page(session: ClientSession, url: str, rate_limiter: RateLimiter, cache: Dict = None) -> Optional[
     Tuple[str, str, Dict]]:
-    """Récupère une page web de manière asynchrone avec support ETag/Last-Modified."""
     await rate_limiter.wait()
-
-    # Préparer les headers conditionnels
     headers = {}
     if cache and url in cache:
         cached_data = cache[url]
@@ -729,48 +649,29 @@ async def fetch_page(session: ClientSession, url: str, rate_limiter: RateLimiter
     for attempt in range(config.MAX_RETRIES):
         try:
             async with session.get(url, headers=headers) as response:
-                # 304 Not Modified
                 if response.status == 304:
                     return (url, None, {'status': 304, 'etag': None, 'last_modified': None})
-
-                # Vérifier le Content-Type AVANT de lire le corps de la réponse
                 content_type = response.headers.get('Content-Type', '')
                 if 'text/html' not in content_type.lower():
                     logger.debug(f"   ↪️ Ignoré (type non-HTML: {content_type}): {url}")
-                    # On retourne un tuple spécial pour indiquer que la page a été visitée mais ignorée
                     return (url, None, {'status': 'skipped_content_type'})
-
                 response.raise_for_status()
                 text = await response.text()
-
-                # Extraire ETag et Last-Modified
                 etag = response.headers.get('ETag')
                 last_modified = response.headers.get('Last-Modified')
-
-                return (str(response.url), text, {
-                    'status': response.status,
-                    'etag': etag,
-                    'last_modified': last_modified
-                })
+                return (str(response.url), text,
+                        {'status': response.status, 'etag': etag, 'last_modified': last_modified})
         except asyncio.TimeoutError:
             logger.warning(f"⏱️ Timeout {attempt + 1}/{config.MAX_RETRIES} pour {url}")
         except Exception as e:
             logger.warning(f"⚠️ Tentative {attempt + 1}/{config.MAX_RETRIES} échouée pour {url}: {e}")
-
         if attempt + 1 < config.MAX_RETRIES:
             await asyncio.sleep(2 ** attempt)
-
     return None
 
 
-async def process_page(
-        session: ClientSession,
-        url: str,
-        context: CrawlContext,
-        current_depth: int = 0
-) -> Tuple[Optional[Dict], List[Tuple[str, int]]]:
-    """Traite une page et retourne le document à indexer + les nouveaux liens avec leur profondeur."""
-
+async def process_page(session: ClientSession, url: str, context: CrawlContext, current_depth: int = 0) -> Tuple[
+    Optional[Dict], List[Tuple[str, int]]]:
     result = await fetch_page(session, url, context.rate_limiter, context.cache if not context.force_recrawl else None)
     if not result:
         await context.stats.increment('errors')
@@ -778,23 +679,15 @@ async def process_page(
 
     final_url, html, metadata = result
 
-    # Gestion du 304 Not Modified
     if metadata['status'] == 304:
         await context.stats.increment('pages_not_modified')
         await context.stats.increment('pages_visited')
-
-        # ← NOUVEAU : Créer un document minimal pour mettre à jour last_crawled_at
         doc_id = generate_doc_id(final_url)
-        refresh_doc = {
-            "id": doc_id,
-            "last_crawled_at": datetime.now().isoformat(),
-            # indexed_at reste inchangé car le contenu n'a pas changé
-        }
+        refresh_doc = {"id": doc_id, "last_crawled_at": datetime.now().isoformat()}
         return refresh_doc, []
 
-    # Gestion du type de contenu non-HTML
     if metadata['status'] == 'skipped_content_type':
-        await context.stats.increment('pages_visited') # On l'a visitée, mais on ne l'indexe pas
+        await context.stats.increment('pages_visited')
         await context.stats.increment('pages_not_indexed')
         return None, []
 
@@ -817,17 +710,15 @@ async def process_page(
         is_no_index_page = is_excluded(final_url, context.no_index_patterns)
         is_duplicate_content = content_hash in context.processed_hashes
 
-        should_index = not is_no_index_page and (
-                context.force_recrawl or not should_skip_page(final_url, content_hash, context.cache)
-        ) and not is_duplicate_content
+        should_index = not is_no_index_page and (context.force_recrawl or not should_skip_page(final_url, content_hash,
+                                                                                               context.cache)) and not is_duplicate_content
 
         doc = None
         if should_index and len(content) >= 50:
             await context.stats.increment('pages_indexed')
             context.processed_hashes.add(content_hash)
 
-            # Détection de la langue pour le HTML
-            lang = "fr" # Langue par défaut
+            lang = "fr"
             html_tag = soup.find('html')
             if html_tag and html_tag.get('lang'):
                 lang = html_tag.get('lang').split('-')[0].lower()
@@ -843,19 +734,18 @@ async def process_page(
                 "content": content,
                 "images": images,
                 "lang": lang,
-                "timestamp": int(time.time()),  # Pour tri chronologique
-                "indexed_at": now_iso,  # ← NOUVEAU : Date d'indexation Meilisearch
-                "last_crawled_at": now_iso,  # ← NOUVEAU : Dernière visite du crawler
-                "content_hash": content_hash,  # ← UTILE : Pour analytics
+                "timestamp": int(time.time()),
+                "indexed_at": now_iso,
+                "last_crawled_at": now_iso,
+                "content_hash": content_hash,
             }
             async with context.cache_lock:
-                update_cache(context.cache, final_url, content_hash, doc_id, metadata['etag'], metadata['last_modified'])
-                # Sauvegarde immédiate pour que les autres workers voient le changement
+                update_cache(context.cache, final_url, content_hash, doc_id, metadata['etag'],
+                             metadata['last_modified'])
                 save_cache(context.cache)
         else:
             await context.stats.increment('pages_not_indexed')
 
-        # Extraire les liens avec profondeur
         new_links = []
         if current_depth < context.max_depth:
             for link in soup.find_all("a", href=True):
@@ -874,12 +764,12 @@ async def process_page(
 
 
 async def crawl_site_html_async(context: CrawlContext):
-    """Crawl un site HTML de manière asynchrone."""
     base_url = context.site["crawl"].replace("*", "")
     max_pages = context.site.get("max_pages", 200)
 
     logger.info(f"🚀 Démarrage crawl async '{context.site['name']}' -> {base_url}")
-    logger.info(f"   Paramètres: max={max_pages}, depth={context.max_depth}, delay={context.rate_limiter.delay:.2f}s, workers={config.CONCURRENT_REQUESTS}")
+    logger.info(
+        f"   Paramètres: max={max_pages}, depth={context.max_depth}, delay={context.rate_limiter.delay:.2f}s, workers={config.CONCURRENT_REQUESTS}")
 
     documents_to_index = []
 
@@ -915,7 +805,8 @@ async def crawl_site_html_async(context: CrawlContext):
     async with ClientSession(timeout=timeout, connector=connector, headers=headers) as session:
         while (to_visit or in_progress) and context.stats.pages_visited < max_pages:
             batch = []
-            while to_visit and len(batch) < config.CONCURRENT_REQUESTS and context.stats.pages_visited + len(in_progress) < max_pages:
+            while to_visit and len(batch) < config.CONCURRENT_REQUESTS and context.stats.pages_visited + len(
+                    in_progress) < max_pages:
                 url, depth = to_visit.pop()
 
                 if url in visited or url in in_progress:
@@ -923,7 +814,8 @@ async def crawl_site_html_async(context: CrawlContext):
                 if is_excluded(url, context.exclude_patterns):
                     continue
 
-                ignored_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.pdf', '.zip', '.rar', '.mp3', '.mp4', '.avi')
+                ignored_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.pdf', '.zip', '.rar', '.mp3',
+                                      '.mp4', '.avi')
                 if url.lower().endswith(ignored_extensions):
                     logger.debug(f"   ↪️ Ignoré (extension de fichier): {url}")
                     visited.add(url)
@@ -960,9 +852,8 @@ async def crawl_site_html_async(context: CrawlContext):
 
                 if len(documents_to_index) >= config.BATCH_SIZE:
                     try:
-                        await index.add_documents(documents_to_index)
+                        index.add_documents(documents_to_index)
                         logger.debug(f"📦 Batch de {len(documents_to_index)} documents indexé")
-                        await context.stats.increment('pages_indexed', len(documents_to_index))
                     except Exception as e:
                         logger.error(f"❌ Erreur indexation batch: {e}")
                     documents_to_index = []
@@ -981,17 +872,13 @@ async def crawl_site_html_async(context: CrawlContext):
 
     if documents_to_index:
         try:
-            await index.add_documents(documents_to_index)
+            index.add_documents(documents_to_index)
             logger.debug(f"📦 Dernier batch de {len(documents_to_index)} documents indexé")
-            await context.stats.increment('pages_indexed', len(documents_to_index))
         except Exception as e:
             logger.error(f"❌ Erreur indexation finale: {e}")
 
-# ---------------------------
-# Crawl JSON
-# ---------------------------
+
 async def crawl_json_api_async(context: CrawlContext):
-    """Crawl une source JSON (wrapper async pour compatibilité)."""
     base_url = context.site["crawl"]
     json_config = context.site["json"]
 
@@ -1099,16 +986,16 @@ async def crawl_json_api_async(context: CrawlContext):
                         "images": images,
                         "lang": context.site.get("lang", "fr"),
                         "timestamp": int(time.time()),
-                        "indexed_at": now_iso,  # ← AJOUTER
-                        "last_crawled_at": now_iso,  # ← AJOUTER
-                        "content_hash": content_hash,  # ← AJOUTER
+                        "indexed_at": now_iso,
+                        "last_crawled_at": now_iso,
+                        "content_hash": content_hash,
                     }
                     documents_to_index.append(doc)
                     update_cache(context.cache, url, content_hash, doc_id)
 
                     if len(documents_to_index) >= config.BATCH_SIZE:
                         try:
-                            await index.add_documents(documents_to_index)
+                            index.add_documents(documents_to_index)
                             await context.stats.increment('pages_indexed', len(documents_to_index))
                         except Exception as e:
                             logger.error(f"❌ Erreur indexation batch: {e}")
@@ -1117,7 +1004,7 @@ async def crawl_json_api_async(context: CrawlContext):
                         save_cache(context.cache)
                 else:
                     await context.stats.increment('pages_not_indexed')
-                
+
                 context.stats.pbar.update(1)
                 context.stats.pbar.set_postfix({
                     'indexées': context.stats.pages_indexed,
@@ -1134,7 +1021,7 @@ async def crawl_json_api_async(context: CrawlContext):
 
         if documents_to_index:
             try:
-                await index.add_documents(documents_to_index)
+                index.add_documents(documents_to_index)
                 await context.stats.increment('pages_indexed', len(documents_to_index))
             except Exception as e:
                 logger.error(f"❌ Erreur indexation finale: {e}")
@@ -1145,60 +1032,21 @@ async def crawl_json_api_async(context: CrawlContext):
         await context.stats.increment('errors')
 
 
-# ---------------------------
-# CLI et Main
-# ---------------------------
 def parse_arguments():
-    """Parse les arguments de ligne de commande."""
-    parser = argparse.ArgumentParser(
-        description='KidSearch Crawler - Async - Moteur d\'indexation pour contenu éducatif',
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-
-    parser.add_argument(
-        '--force',
-        action='store_true',
-        help='Force le re-crawl complet (ignore le cache)'
-    )
-
-    parser.add_argument(
-        '--site',
-        type=str,
-        help='Crawl uniquement un site spécifique (par nom)'
-    )
-
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Mode verbose (affiche les messages de debug)'
-    )
-
-    parser.add_argument(
-        '--clear-cache',
-        action='store_true',
-        help='Efface le cache avant de démarrer'
-    )
-
-    parser.add_argument(
-        '--stats-only',
-        action='store_true',
-        help='Affiche uniquement les statistiques du cache'
-    )
-
-    parser.add_argument(
-        '--workers',
-        type=int,
-        default=config.CONCURRENT_REQUESTS,
-        help=f'Nombre de requêtes parallèles (défaut: {config.CONCURRENT_REQUESTS})'
-    )
-
+    parser = argparse.ArgumentParser(description='KidSearch Crawler',
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--force', action='store_true', help='Force le re-crawl complet')
+    parser.add_argument('--site', type=str, help='Crawl un site spécifique')
+    parser.add_argument('--verbose', action='store_true', help='Mode verbose')
+    parser.add_argument('--clear-cache', action='store_true', help='Efface le cache')
+    parser.add_argument('--stats-only', action='store_true', help='Affiche les stats du cache')
+    parser.add_argument('--workers', type=int, default=config.CONCURRENT_REQUESTS,
+                        help=f'Nombre de workers (défaut: {config.CONCURRENT_REQUESTS})')
     return parser.parse_args()
 
 
 def show_cache_stats():
-    """Affiche les statistiques du cache."""
     cache = load_cache()
-
     urls_count = len([k for k in cache.keys() if k != '_meta'])
 
     if urls_count == 0:
@@ -1251,7 +1099,6 @@ def show_cache_stats():
 
 
 def clear_cache():
-    """Efface le cache."""
     if os.path.exists(config.CACHE_FILE):
         try:
             os.remove(config.CACHE_FILE)
@@ -1263,7 +1110,6 @@ def clear_cache():
 
 
 async def main_async():
-    """Point d'entrée principal asynchrone."""
     args = parse_arguments()
 
     if args.verbose:
@@ -1347,8 +1193,8 @@ async def main_async():
         logger.info(f"{'=' * 60}\n")
         show_cache_stats()
 
+
 def main():
-    """Wrapper synchrone pour le main asynchrone."""
     try:
         asyncio.run(main_async())
     except KeyboardInterrupt:

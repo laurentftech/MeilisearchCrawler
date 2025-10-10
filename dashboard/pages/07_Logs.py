@@ -4,23 +4,29 @@ import time
 
 from src.config import LOG_FILE
 from src.state import is_crawler_running
+from src.i18n import get_translator
 
-st.header("🪵 Logs du Crawler")
+# Initialiser le traducteur
+if 'lang' not in st.session_state:
+    st.session_state.lang = "fr"
+t = get_translator(st.session_state.lang)
+
+st.header(t("logs.title"))
 
 running = is_crawler_running()
 
 col1, col2, col3 = st.columns([2, 1, 1])
 with col1:
-    num_lines = st.slider("Nombre de lignes à afficher:", 10, 1000, 200)
+    num_lines = st.slider(t("logs.lines_to_show"), 10, 1000, 200)
 with col2:
-    filter_level = st.selectbox("Filtrer par niveau:", ["Tous", "ERROR", "WARNING", "INFO", "DEBUG"])
+    filter_level = st.selectbox(t("logs.filter_by_level"), [t("logs.all_levels"), "ERROR", "WARNING", "INFO", "DEBUG"])
 with col3:
     st.write("\n")
-    if st.button("🔄 Actualiser"):
+    if st.button(t("logs.refresh_button")):
         st.rerun()
 
 if not os.path.exists(LOG_FILE):
-    st.warning("📝 Aucun fichier de log trouvé. Les logs apparaîtront après le premier crawl.")
+    st.warning(t("logs.no_log_file"))
 else:
     try:
         with open(LOG_FILE, "r", encoding='utf-8') as f:
@@ -28,7 +34,7 @@ else:
 
         # Filter and process lines
         filtered_lines = lines
-        if filter_level != "Tous":
+        if filter_level != t("logs.all_levels"):
             filtered_lines = [l for l in lines if filter_level in l]
 
         # Take the last N lines
@@ -44,18 +50,18 @@ else:
         st.code(log_content, language='log', line_numbers=True)
 
         # Log statistics
-        st.subheader("📊 Statistiques des Logs")
+        st.subheader(t("logs.log_stats"))
         col1, col2, col3 = st.columns(3)
-        col1.metric("Total de lignes", len(lines))
-        col2.metric("🔴 Erreurs", sum(1 for l in lines if 'ERROR' in l))
-        col3.metric("🟡 Warnings", sum(1 for l in lines if 'WARNING' in l))
+        col1.metric(t("logs.total_lines"), len(lines))
+        col2.metric(f"🔴 {t('logs.errors')}", sum(1 for l in lines if 'ERROR' in l))
+        col3.metric(f"🟡 {t('logs.warnings')}", sum(1 for l in lines if 'WARNING' in l))
 
     except Exception as e:
-        st.error(f"❌ Erreur lors de la lecture des logs: {e}")
+        st.error(t("logs.error_reading_logs").format(e=e))
 
 # Auto-refresh
 if running:
     st.markdown("---")
-    st.caption("💡 Actualisation automatique toutes les 5 secondes...")
+    st.caption(t("logs.auto_refresh_caption"))
     time.sleep(5)
     st.rerun()
