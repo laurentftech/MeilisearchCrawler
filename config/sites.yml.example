@@ -1,4 +1,14 @@
 sites:
+    - name: Vikidia Test
+      crawl: https://fr.vikidia.org/wiki/Accueil
+      type: mediawiki
+      namespaces: [0]
+      api_batch_size: 50
+      delay: 0.1
+      max_pages: 100
+      lang: en
+      safety_filter: true
+
     - name: BBC Bitesize
       crawl: https://www.bbc.co.uk/bitesize/levels/zbr9wmn
       delay: 0.5

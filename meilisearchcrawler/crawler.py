@@ -1188,6 +1188,87 @@ def clear_cache():
         logger.info("💾 Aucun cache à effacer")
 
 
+async def crawl_mediawiki_async(context: CrawlContext):
+    """
+    Point d'entrée pour crawler un wiki MediaWiki (Vikidia, Wikipedia, etc.)
+
+    Args:
+        context: CrawlContext contenant la config du site et les stats
+    """
+    from meilisearchcrawler.mediawiki_crawler import MediaWikiCrawler
+
+    # Initialiser le crawler MediaWiki
+    crawler = MediaWikiCrawler(context)
+
+    # Récupérer tous les documents
+    documents = await crawler.crawl()
+
+    if not documents:
+        logger.warning("⚠️  Aucun document à indexer")
+        return
+
+    # Traitement final : génération des embeddings et indexation
+    logger.info(f"⚙️  Finalisation et indexation de {len(documents)} documents...")
+
+    # Génération des embeddings si activé
+    if use_embeddings:
+        logger.info(f"   -> Génération de {len(documents)} embeddings via Gemini...")
+        logger.info(f"      (par lots de {config.GEMINI_EMBEDDING_BATCH_SIZE})")
+
+        all_embeddings = []
+        texts_to_embed = [
+            f"{doc.get('title', '')}\n{doc.get('content', '')}".strip()
+            for doc in documents
+        ]
+
+        # Traiter par batches pour éviter les timeouts
+        total_batches = (
+                                    len(texts_to_embed) + config.GEMINI_EMBEDDING_BATCH_SIZE - 1) // config.GEMINI_EMBEDDING_BATCH_SIZE
+
+        for i in range(0, len(texts_to_embed), config.GEMINI_EMBEDDING_BATCH_SIZE):
+            batch_num = i // config.GEMINI_EMBEDDING_BATCH_SIZE + 1
+            batch_texts = texts_to_embed[i:i + config.GEMINI_EMBEDDING_BATCH_SIZE]
+
+            logger.info(f"      Batch {batch_num}/{total_batches} ({len(batch_texts)} embeddings)...")
+
+            batch_embeddings = get_embeddings_batch(batch_texts)
+
+            if batch_embeddings:
+                all_embeddings.extend(batch_embeddings)
+            else:
+                # Si un batch échoue, ajouter des None pour garder la correspondance
+                logger.warning(f"      ⚠️ Échec du batch {batch_num}, documents indexés sans embeddings")
+                all_embeddings.extend([None] * len(batch_texts))
+
+        # Ajouter les embeddings aux documents
+        if len(all_embeddings) == len(documents):
+            embedded_count = 0
+            for doc, embedding in zip(documents, all_embeddings):
+                if embedding:
+                    doc["_vectors"] = {"default": embedding}
+                    embedded_count += 1
+
+            logger.info(f"   ✓ {embedded_count}/{len(documents)} documents avec embeddings")
+        else:
+            logger.error("❌ Taille des embeddings ne correspond pas, indexation sans embeddings")
+
+    # Indexation par lots dans MeiliSearch
+    logger.info(f"📦 Indexation dans MeiliSearch par lots de {config.BATCH_SIZE}...")
+
+    total_indexed = 0
+    for i in range(0, len(documents), config.BATCH_SIZE):
+        batch_docs = documents[i:i + config.BATCH_SIZE]
+
+        try:
+            index.add_documents(batch_docs)
+            total_indexed += len(batch_docs)
+            logger.debug(f"   ✓ Batch {i // config.BATCH_SIZE + 1}: {len(batch_docs)} documents indexés")
+        except Exception as e:
+            logger.error(f"❌ Erreur indexation batch {i // config.BATCH_SIZE + 1}: {e}")
+            await context.stats.increment('errors', len(batch_docs))
+
+    logger.info(f"✅ {total_indexed} documents indexés avec succès")
+
 async def main_async():
     args = parse_arguments()
     global use_embeddings, gemini_client
@@ -1260,10 +1341,15 @@ async def main_async():
 
             completed_successfully = False
             try:
-                if site.get('type') == 'json':
+                site_type = site.get('type', 'html')
+
+                if site_type == 'mediawiki':
+                    await crawl_mediawiki_async(context)
+                elif site_type == 'json':
                     await crawl_json_api_async(context)
                 else:
                     await crawl_site_html_async(context)
+
                 completed_successfully = True
             except KeyboardInterrupt:
                 logger.warning("\n⚠️  Interruption par l'utilisateur")
