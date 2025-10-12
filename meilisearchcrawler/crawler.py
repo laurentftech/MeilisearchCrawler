@@ -22,6 +22,7 @@ import argparse
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from tqdm.asyncio import tqdm
 from tqdm import tqdm as tqdm_sync
+from google import genai as gemini
 import trafilatura
 
 
@@ -73,6 +74,10 @@ class Config:
     CACHE_DAYS = int(os.getenv('CACHE_DAYS', 7))
     CONCURRENT_REQUESTS = int(os.getenv('CONCURRENT_REQUESTS', 5))
     MAX_CONNECTIONS = int(os.getenv('MAX_CONNECTIONS', 100))
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-004")
+    EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", 768))
+    GEMINI_EMBEDDING_BATCH_SIZE = int(os.getenv("GEMINI_EMBEDDING_BATCH_SIZE", 100))
 
     GLOBAL_EXCLUDE_PATTERNS = [
         '/login', '/logout', '/signin', '/signup', '/register',
@@ -87,6 +92,9 @@ if not config.MEILI_URL or not config.MEILI_KEY:
     logger.error("❌ Les variables d'environnement MEILI_URL et MEILI_KEY doivent être définies.")
     exit(1)
 
+gemini_client = None
+use_embeddings = False
+
 # ---------------------------
 # MeiliSearch Setup
 # ---------------------------
@@ -99,7 +107,7 @@ except Exception as e:
     exit(1)
 
 
-def update_meilisearch_settings(index):
+def update_meilisearch_settings(index, with_embeddings=False):
     logger.info("⚙️ Mise à jour des paramètres MeiliSearch...")
     settings = {
         'searchableAttributes': ['title', 'excerpt', 'content', 'site', 'images.alt'],
@@ -111,6 +119,16 @@ def update_meilisearch_settings(index):
         'sortableAttributes': ['timestamp', 'indexed_at', 'last_crawled_at'],
         'rankingRules': ['words', 'typo', 'proximity', 'attribute', 'sort', 'exactness']
     }
+
+    if with_embeddings:
+        logger.info("   -> Activation du support des embeddings (vector search)")
+        settings['embedders'] = {
+            "default": {
+                "source": "userProvided",
+                "dimensions": config.EMBEDDING_DIMENSIONS
+            }
+        }
+
     try:
         task = index.update_settings(settings)
         logger.info(f"   ✓ Paramètres mis à jour (task uid: {task.task_uid})")
@@ -129,7 +147,7 @@ try:
 
     index = client.index(config.INDEX_NAME)
     logger.info(f"✅ Index '{config.INDEX_NAME}' prêt")
-    update_meilisearch_settings(index)
+    # Les settings seront mis à jour dans main_async après analyse des arguments
 
 except Exception as e:
     logger.error(f"❌ Erreur configuration index: {e}")
@@ -487,6 +505,23 @@ def extract_images(soup: BeautifulSoup, base_url: str, max_images: int = 5) -> L
             seen_urls.add(full_url)
     return images
 
+# ---------------------------
+# Gemini Embeddings
+# ---------------------------
+def get_embeddings_batch(texts: List[str]) -> Optional[List[List[float]]]:
+    """Génère des embeddings pour plusieurs textes en une seule requête"""
+    if not gemini_client:
+        return None
+    try:
+        result = gemini_client.models.embed_content(
+            model=config.EMBEDDING_MODEL,
+            contents=texts
+        )
+        return [embedding.values for embedding in result.embeddings]
+    except Exception as e:
+        logger.error(f"Erreur API Gemini: {e}")
+        return None
+
 
 # ---------------------------
 # Stats
@@ -498,6 +533,7 @@ class CrawlStats:
         self.pages_visited = 0
         self.pages_indexed = 0
         self.pages_not_indexed = 0
+        self.pages_skipped_cache = 0
         self.pages_not_modified = 0
         self.discovered_but_not_visited = 0
         self.errors = 0
@@ -514,6 +550,7 @@ class CrawlStats:
                 self.pbar.set_postfix({
                     'indexées': self.pages_indexed,
                     'non-indexées': self.pages_not_indexed,
+                    'ignorées(cache)': self.pages_skipped_cache,
                     'non-modifiées': self.pages_not_modified,
                     'erreurs': self.errors
                 })
@@ -527,6 +564,7 @@ class CrawlStats:
         logger.info(f"🌐 Pages visitées: {self.pages_visited}")
         logger.info(f"✅ Pages indexées: {self.pages_indexed}")
         logger.info(f"⏭️  Pages non indexées: {self.pages_not_indexed}")
+        logger.info(f"🗂️  Pages ignorées (cache): {self.pages_skipped_cache}")
         logger.info(f"♻️  Pages non modifiées (304): {self.pages_not_modified}")
         logger.info(f"🗺️  Liens découverts: {self.discovered_but_not_visited}")
         logger.info(f"❌ Erreurs: {self.errors}")
@@ -710,8 +748,10 @@ async def process_page(session: ClientSession, url: str, context: CrawlContext, 
         is_no_index_page = is_excluded(final_url, context.no_index_patterns)
         is_duplicate_content = content_hash in context.processed_hashes
 
-        should_index = not is_no_index_page and (context.force_recrawl or not should_skip_page(final_url, content_hash,
-                                                                                               context.cache)) and not is_duplicate_content
+        is_skipped_by_cache = not context.force_recrawl and should_skip_page(final_url, content_hash, context.cache)
+
+        should_index = not is_no_index_page and not is_skipped_by_cache and not is_duplicate_content
+
 
         doc = None
         if should_index and len(content) >= 50:
@@ -743,6 +783,8 @@ async def process_page(session: ClientSession, url: str, context: CrawlContext, 
                 update_cache(context.cache, final_url, content_hash, doc_id, metadata['etag'],
                              metadata['last_modified'])
                 save_cache(context.cache)
+        elif is_skipped_by_cache:
+            await context.stats.increment('pages_skipped_cache')
         else:
             await context.stats.increment('pages_not_indexed')
 
@@ -848,15 +890,7 @@ async def crawl_site_html_async(context: CrawlContext):
                 doc, new_links = result
 
                 if doc:
-                    documents_to_index.append(doc)
-
-                if len(documents_to_index) >= config.BATCH_SIZE:
-                    try:
-                        index.add_documents(documents_to_index)
-                        logger.debug(f"📦 Batch de {len(documents_to_index)} documents indexé")
-                    except Exception as e:
-                        logger.error(f"❌ Erreur indexation batch: {e}")
-                    documents_to_index = []
+                    documents_to_index.append(doc) # On ajoute le doc, l'embedding sera fait plus tard
 
                 for link_url, link_depth in new_links:
                     if link_url not in visited and link_url not in in_progress:
@@ -865,17 +899,48 @@ async def crawl_site_html_async(context: CrawlContext):
     context.stats.pbar.close()
     context.stats.discovered_but_not_visited = len(to_visit)
 
+    # Traitement final des documents et indexation
+    if documents_to_index:
+        logger.info(f"⚙️  Finalisation et indexation de {len(documents_to_index)} documents...")
+
+        if use_embeddings:
+            logger.info(f"   -> Génération de {len(documents_to_index)} embeddings via Gemini (par lots de {config.GEMINI_EMBEDDING_BATCH_SIZE})...")
+            all_embeddings = []
+            texts_to_embed = [f"{doc.get('title', '')}\n{doc.get('content', '')}".strip() for doc in documents_to_index]
+
+            for i in range(0, len(texts_to_embed), config.GEMINI_EMBEDDING_BATCH_SIZE):
+                batch_texts = texts_to_embed[i:i + config.GEMINI_EMBEDDING_BATCH_SIZE]
+                batch_embeddings = get_embeddings_batch(batch_texts)
+                if batch_embeddings:
+                    all_embeddings.extend(batch_embeddings)
+                else:
+                    # Si un batch échoue, on ajoute des None pour garder la correspondance de taille
+                    all_embeddings.extend([None] * len(batch_texts))
+
+            if len(all_embeddings) == len(documents_to_index):
+                for doc, embedding in zip(documents_to_index, all_embeddings):
+                    if embedding:
+                        doc["_vectors"] = {"default": embedding}
+            else:
+                logger.error("❌ Échec de la génération des embeddings, les documents seront indexés sans.")
+
+        # Indexation par lots
+        for i in range(0, len(documents_to_index), config.BATCH_SIZE):
+            batch_docs = documents_to_index[i:i + config.BATCH_SIZE]
+            try:
+                index.add_documents(batch_docs)
+                logger.debug(f"📦 Batch de {len(batch_docs)} documents indexé")
+            except Exception as e:
+                logger.error(f"❌ Erreur indexation batch: {e}")
+
+
     if len(to_visit) > 0 and context.stats.pages_visited >= max_pages:
         logger.info(f"📝 Sauvegarde de {len(to_visit)} URLs pour une reprise future.")
         resume_urls_set = {url for url, depth in to_visit}
         complete_crawl_session(context.cache, context.site['name'], completed=False, resume_urls=resume_urls_set)
 
-    if documents_to_index:
-        try:
-            index.add_documents(documents_to_index)
-            logger.debug(f"📦 Dernier batch de {len(documents_to_index)} documents indexé")
-        except Exception as e:
-            logger.error(f"❌ Erreur indexation finale: {e}")
+    # L'ancienne logique de sauvegarde du dernier batch est maintenant gérée ci-dessus
+
 
 
 async def crawl_json_api_async(context: CrawlContext):
@@ -992,16 +1057,6 @@ async def crawl_json_api_async(context: CrawlContext):
                     }
                     documents_to_index.append(doc)
                     update_cache(context.cache, url, content_hash, doc_id)
-
-                    if len(documents_to_index) >= config.BATCH_SIZE:
-                        try:
-                            index.add_documents(documents_to_index)
-                            await context.stats.increment('pages_indexed', len(documents_to_index))
-                        except Exception as e:
-                            logger.error(f"❌ Erreur indexation batch: {e}")
-                            await context.stats.increment('errors')
-                        documents_to_index = []
-                        save_cache(context.cache)
                 else:
                     await context.stats.increment('pages_not_indexed')
 
@@ -1019,13 +1074,36 @@ async def crawl_json_api_async(context: CrawlContext):
 
         context.stats.pbar.close()
 
+        # Traitement final et indexation
         if documents_to_index:
-            try:
-                index.add_documents(documents_to_index)
-                await context.stats.increment('pages_indexed', len(documents_to_index))
-            except Exception as e:
-                logger.error(f"❌ Erreur indexation finale: {e}")
-                await context.stats.increment('errors')
+            logger.info(f"⚙️  Finalisation et indexation de {len(documents_to_index)} documents...")
+            if use_embeddings:
+                logger.info(f"   -> Génération de {len(documents_to_index)} embeddings via Gemini (par lots de {config.GEMINI_EMBEDDING_BATCH_SIZE})...")
+                all_embeddings = []
+                texts_to_embed = [f"{doc.get('title', '')}\n{doc.get('content', '')}".strip() for doc in documents_to_index]
+
+                for i in range(0, len(texts_to_embed), config.GEMINI_EMBEDDING_BATCH_SIZE):
+                    batch_texts = texts_to_embed[i:i + config.GEMINI_EMBEDDING_BATCH_SIZE]
+                    batch_embeddings = get_embeddings_batch(batch_texts)
+                    if batch_embeddings:
+                        all_embeddings.extend(batch_embeddings)
+                    else:
+                        all_embeddings.extend([None] * len(batch_texts))
+
+                if len(all_embeddings) == len(documents_to_index):
+                    for doc, embedding in zip(documents_to_index, all_embeddings):
+                        if embedding:
+                            doc["_vectors"] = {"default": embedding}
+
+            # Indexation par lots
+            for i in range(0, len(documents_to_index), config.BATCH_SIZE):
+                batch_docs = documents_to_index[i:i + config.BATCH_SIZE]
+                try:
+                    index.add_documents(batch_docs)
+                    await context.stats.increment('pages_indexed', len(batch_docs))
+                except Exception as e:
+                    logger.error(f"❌ Erreur indexation batch: {e}")
+                    await context.stats.increment('errors')
 
     except Exception as e:
         logger.error(f"❌ Erreur traitement JSON pour {context.site['name']}: {e}")
@@ -1042,6 +1120,7 @@ def parse_arguments():
     parser.add_argument('--stats-only', action='store_true', help='Affiche les stats du cache')
     parser.add_argument('--workers', type=int, default=config.CONCURRENT_REQUESTS,
                         help=f'Nombre de workers (défaut: {config.CONCURRENT_REQUESTS})')
+    parser.add_argument('--embeddings', action='store_true', help='Active la génération d\'embeddings avec Gemini')
     return parser.parse_args()
 
 
@@ -1111,6 +1190,19 @@ def clear_cache():
 
 async def main_async():
     args = parse_arguments()
+    global use_embeddings, gemini_client
+
+    if args.embeddings:
+        if config.GEMINI_API_KEY:
+            logger.info("✨ Activation de la génération d'embeddings avec Google Gemini")
+            use_embeddings = True
+            try:
+                gemini_client = gemini.Client(api_key=config.GEMINI_API_KEY)
+            except Exception as e:
+                logger.error(f"❌ Erreur de configuration de l'API Gemini: {e}")
+                use_embeddings = False
+        else:
+            logger.warning("⚠️  L'option --embeddings est activée mais GEMINI_API_KEY n'est pas définie. Embeddings désactivés.")
 
     if args.verbose:
         logger.setLevel(logging.DEBUG)
@@ -1124,6 +1216,9 @@ async def main_async():
 
     logger.info("⚙️  Vérification de l'intégrité du cache...")
     load_cache()
+
+    # Mettre à jour les settings de l'index en fonction de l'utilisation des embeddings
+    update_meilisearch_settings(index, with_embeddings=use_embeddings)
 
     if args.workers:
         config.CONCURRENT_REQUESTS = args.workers
@@ -1148,6 +1243,8 @@ async def main_async():
         logger.info(f"📋 {len(sites_to_crawl)} site(s) à crawler")
         logger.info(f"🔄 Mode: {'FORCE RECRAWL' if args.force else 'INCREMENTAL'}")
         logger.info(f"⚡ Workers: {config.CONCURRENT_REQUESTS} requêtes parallèles")
+        if use_embeddings:
+            logger.info(f"✨ Embeddings: Activés (modèle: {config.EMBEDDING_MODEL})")
         logger.info(f"{'=' * 60}\n")
 
         for i, site in enumerate(sites_to_crawl, 1):

@@ -222,16 +222,23 @@ else:
                     st.subheader(t("tree.priority_recrawl_title")); st.caption(t("tree.priority_recrawl_caption"))
                     df['priority_score'] = df['last_crawl_days'] * 0.7 + df['freshness_days'] * 0.3
                     old_pages = df[df['status'] == 'indexed'].nlargest(10, 'priority_score')
+                    
                     if not old_pages.empty:
-                        old_pages.columns = [t("tree.col_title"), t("tree.col_site"), 'Jours crawl', 'Jours index', t("tree.col_last_visit"), t("tree.col_status")] # Simplified for display
-                        st.dataframe(old_pages[['Titre', 'Site', 'Jours crawl', 'Jours index']], use_container_width=True, hide_index=True, height=400)
+                        # Sélectionner et renommer les colonnes pour l'affichage
+                        display_df = old_pages[['title', 'site', 'last_crawl_days', 'freshness_days']].copy()
+                        display_df.columns = [t("tree.col_title"), t("tree.col_site"), t("tree.col_crawl_days"), t("tree.col_index_days")]
+                        st.dataframe(display_df, use_container_width=True, hide_index=True, height=400)
                     else: st.info(t("tree.all_pages_up_to_date"))
+
                 with col2:
                     st.subheader(t("tree.recently_crawled_title")); st.caption(t("tree.recently_crawled_caption"))
                     recent_pages = df.nsmallest(10, 'last_crawl_days')
+                    
                     if not recent_pages.empty:
-                        recent_pages.columns = [t("tree.col_title"), t("tree.col_site"), 'Jours crawl', 'Jours index', t("tree.col_last_visit"), t("tree.col_status")] # Simplified
-                        st.dataframe(recent_pages[['Titre', 'Site', 'Jours crawl', 'Jours index']], use_container_width=True, hide_index=True, height=400)
+                        # Sélectionner et renommer les colonnes pour l'affichage
+                        display_df_recent = recent_pages[['title', 'site', 'last_crawl_days', 'freshness_days']].copy()
+                        display_df_recent.columns = [t("tree.col_title"), t("tree.col_site"), t("tree.col_crawl_days"), t("tree.col_index_days")]
+                        st.dataframe(display_df_recent, use_container_width=True, hide_index=True, height=400)
                     else: st.info(t("tree.no_recent_crawls"))
 
                 st.markdown("---")

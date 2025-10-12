@@ -35,6 +35,7 @@ This crawler needs a Meilisearch instance to send its data to. The easiest way t
     docker run -it --rm \
       -p 7700:7700 \
       -e MEILI_MASTER_KEY='a_master_key_that_is_long_and_secure' \
+      -e GEMINI_API_KEY='your_gemini_api_key' \
       -v $(pwd)/meili_data:/meili_data \
       ghcr.io/meilisearch/meilisearch:latest
     ```

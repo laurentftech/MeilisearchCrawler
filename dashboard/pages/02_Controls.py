@@ -2,6 +2,7 @@ import streamlit as st
 import time
 import subprocess
 import sys
+import os
 
 from src.state import start_crawler, stop_crawler, clear_cache, is_crawler_running
 from src.utils import load_sites_config, load_cache_stats, parse_logs_for_errors
@@ -17,6 +18,14 @@ st.header(t("controls.title"))
 
 running = is_crawler_running()
 
+# Si le crawler tourne, afficher un message et un lien vers l'aperçu
+if running:
+    st.info(t("controls.crawler_is_running_info"))
+    st.page_link("pages/01_Overview.py", label=t("controls.go_to_overview_button"), icon="🏠")
+
+# Vérifier si la clé Gemini est disponible
+gemini_key_present = bool(os.getenv("GEMINI_API_KEY"))
+
 # Crawl options
 col1, col2 = st.columns(2)
 
@@ -30,12 +39,21 @@ with col1:
 
     selected_site = st.selectbox(t("controls.site_to_crawl"), site_names, disabled=running)
     force_crawl = st.checkbox(t("controls.force_crawl"), value=False, disabled=running)
+    
+    # Nouvelle case à cocher pour les embeddings
+    generate_embeddings = st.checkbox(
+        t("controls.generate_embeddings"), 
+        value=True,
+        disabled=running or not gemini_key_present,
+        help="GEMINI_API_KEY non trouvée dans votre .env" if not gemini_key_present else "Génère un vecteur sémantique pour chaque nouvelle page."
+    )
+
     workers = st.slider(t("controls.workers"), 1, 20, 5, disabled=running)
 
     site_param = None if selected_site == t("controls.all_sites") else selected_site
 
     if st.button(t("controls.launch_crawl"), disabled=running, type="primary", use_container_width=True):
-        success = start_crawler(site=site_param, force=force_crawl, workers=workers)
+        success = start_crawler(site=site_param, force=force_crawl, workers=workers, embed=generate_embeddings)
         if success:
             if site_param:
                 st.toast(t('controls.toast_crawler_started_for_site').format(site=site_param), icon="🚀")

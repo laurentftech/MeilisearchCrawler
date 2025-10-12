@@ -10,3 +10,4 @@ trafilatura
 pandas
 streamlit
 plotly
+google-genai

@@ -109,6 +109,7 @@ with col1:
     {t('page_search')}
     {t('page_stats')}
     {t('page_tree')}
+    {t('page_embeddings')}
     {t('page_config')}
     {t('page_logs')}
     """)
