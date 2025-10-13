@@ -3,7 +3,7 @@ import sys
 import requests
 from dotenv import load_dotenv
 import meilisearch
-from meilisearch.errors import MeilisearchApiError
+from meilisearch.errors import MeilisearchApiError, MeilisearchTimeoutError
 
 # --- Chargement de la configuration ---
 print("⚙️  Chargement de la configuration...")
@@ -50,8 +50,8 @@ try:
     # --- Configuration des embedders ---
     print("\n🔄 Mise à jour des embedders...")
 
-    # Construction du payload sans f-string pour éviter les conflits d'échappement
-    embedder_url = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=" + GEMINI_API_KEY
+    # Construction de l'URL avec la clé API Gemini
+    embedder_url = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
 
     settings_payload = {
         "embedders": {
@@ -62,7 +62,6 @@ try:
             "query": {
                 "source": "rest",
                 "url": embedder_url,
-                "documentTemplate": "{{doc.id}}",
                 "request": {
                     "model": "models/text-embedding-004",
                     "content": {
@@ -70,6 +69,9 @@ try:
                             {"text": "{{text}}"}
                         ]
                     }
+                },
+                "headers": {
+                    "x-goog-api-key": GEMINI_API_KEY
                 },
                 "response": {
                     "embedding": {
@@ -83,13 +85,35 @@ try:
 
     task = index.update_settings(settings_payload)
     print(f"   - Tâche soumise (UID: {task.task_uid}), en attente de résolution...")
-    final_task = client.wait_for_task(task.task_uid, timeout_in_ms=20000)
+    print("   ⏳ Cela peut prendre jusqu'à 2 minutes (test de connexion à Gemini)...")
 
-    if final_task.status == "succeeded":
-        print("\n✅ Embedders configurés avec succès !")
-    else:
-        print("\n❌ La mise à jour a échoué :")
-        print(final_task.error)
+    try:
+        final_task = client.wait_for_task(task.task_uid, timeout_in_ms=120000)  # 2 minutes
+
+        if final_task.status == "succeeded":
+            print("\n✅ Embedders configurés avec succès !")
+        else:
+            print("\n❌ La mise à jour a échoué :")
+            print(f"   Status: {final_task.status}")
+            if hasattr(final_task, 'error') and final_task.error:
+                print(f"   Erreur: {final_task.error}")
+
+    except MeilisearchTimeoutError:
+        print("\n⏱️  Timeout dépassé, vérification manuelle du statut de la tâche...")
+        # Vérifier manuellement le statut
+        task_status = client.get_task(task.task_uid)
+        print(f"   Status actuel: {task_status.status}")
+
+        if task_status.status == "succeeded":
+            print("✅ La configuration a réussi !")
+        elif task_status.status == "failed":
+            print("❌ La configuration a échoué :")
+            if hasattr(task_status, 'error') and task_status.error:
+                print(f"   Erreur: {task_status.error}")
+        else:
+            print(f"⏳ La tâche est toujours en cours ({task_status.status})")
+            print("   Vous pouvez vérifier plus tard avec:")
+            print(f"   curl -H 'Authorization: Bearer {API_KEY}' {MEILI_URL}/tasks/{task.task_uid}")
 
 except MeilisearchApiError as e:
     print(f"\n❌ ERREUR API Meilisearch: {e}")
