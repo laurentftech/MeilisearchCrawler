@@ -31,8 +31,9 @@ class MediaWikiCrawler:
         return base_url.rstrip('/') + '/w/api.php'
 
     async def get_all_page_ids(self, session: aiohttp.ClientSession) -> List[int]:
-        """Récupère tous les IDs de pages du wiki"""
-        logger.info(f"📋 Récupération de la liste des pages depuis {self.api_url}")
+        """Récupère tous les IDs de pages du wiki (SEULEMENT les articles du namespace spécifié)"""
+        logger.info(f"📋 Récupération de la liste des articles depuis {self.api_url}")
+        logger.info(f"   Namespace(s): {self.namespaces} (0 = articles principaux)")
 
         all_page_ids = []
         continue_token = None
@@ -43,6 +44,7 @@ class MediaWikiCrawler:
                 'list': 'allpages',
                 'aplimit': 'max',  # 500 par requête
                 'apnamespace': '|'.join(map(str, self.namespaces)),
+                'apfilterredir': 'nonredirects',  # IMPORTANT: ignorer les redirections
                 'format': 'json'
             }
 
@@ -59,7 +61,7 @@ class MediaWikiCrawler:
                     page_ids = [page['pageid'] for page in pages]
                     all_page_ids.extend(page_ids)
 
-                    logger.info(f"   → {len(all_page_ids)} pages listées...")
+                    logger.info(f"   → {len(all_page_ids)} articles listés...")
 
                     # Vérifier s'il y a plus de pages
                     if 'continue' in data:
@@ -71,7 +73,7 @@ class MediaWikiCrawler:
                 logger.error(f"❌ Erreur lors de la récupération de la liste: {e}")
                 break
 
-        logger.info(f"✅ {len(all_page_ids)} pages trouvées au total")
+        logger.info(f"✅ {len(all_page_ids)} articles trouvés (namespace {self.namespaces}, sans redirections)")
         return all_page_ids
 
     async def fetch_pages_batch(self, session: aiohttp.ClientSession,
@@ -83,9 +85,10 @@ class MediaWikiCrawler:
         params = {
             'action': 'query',
             'pageids': '|'.join(map(str, page_ids)),
-            'prop': 'extracts|info|pageimages',
-            'explaintext': 1,  # Texte brut sans HTML
+            'prop': 'extracts|info|pageimages|revisions',
+            'explaintext': 1,
             'exsectionformat': 'plain',
+            'rvprop': 'content',
             'inprop': 'url',
             'piprop': 'thumbnail',
             'pithumbsize': 500,
@@ -101,29 +104,41 @@ class MediaWikiCrawler:
                 pages = data.get('query', {}).get('pages', {})
                 documents = []
 
+                stats = {'total': len(pages), 'missing': 0, 'redirect': 0,
+                         'wrong_namespace': 0, 'unsafe': 0, 'stub': 0, 'ok': 0}
+
                 for page_id, page_data in pages.items():
-                    # Ignorer les pages manquantes ou redirigées
-                    if 'missing' in page_data or 'redirect' in page_data:
+                    if 'missing' in page_data:
+                        stats['missing'] += 1
+                        continue
+                    if 'redirect' in page_data:
+                        stats['redirect'] += 1
                         continue
 
                     title = page_data.get('title', '')
-                    content = page_data.get('extract', '')
+                    content = page_data.get('extract') or \
+                              page_data.get('revisions', [{}])[0].get('*', '')
                     url = page_data.get('fullurl', '')
 
-                    # Filtrage de sécurité
-                    if not self._is_safe_content(title, content):
+                    namespace = page_data.get('ns', -1)
+                    if namespace not in self.namespaces:
+                        stats['wrong_namespace'] += 1
                         continue
 
-                    # Nettoyer le contenu
+                    if not self._is_safe_content(title, content):
+                        stats['unsafe'] += 1
+                        continue
+
                     content = self._clean_content(content)
 
-                    if len(content) < 50:  # Ignorer les stubs
+                    # Ancien seuil 10 → assoupli
+                    if len(content.strip()) < 50:
+                        stats['stub'] += 1
                         continue
 
-                    # Créer l'excerpt
+                    stats['ok'] += 1
                     excerpt = self._create_excerpt(content)
 
-                    # Images
                     images = []
                     if 'thumbnail' in page_data:
                         images.append({
@@ -140,6 +155,10 @@ class MediaWikiCrawler:
                         'url': url,
                         'images': images
                     })
+
+                if (stats['stub'] > 10 or stats['unsafe'] > 0) and len(pages) == self.batch_size:
+                    logger.info(
+                        f"   📊 Batch: {stats['ok']}/{stats['total']} retenus | Stubs/vides: {stats['stub']} | Non sûrs: {stats['unsafe']}")
 
                 return documents
 
@@ -170,15 +189,39 @@ class MediaWikiCrawler:
         """Nettoie le contenu de l'API MediaWiki"""
         import re
 
-        # Supprimer les sections de référence
-        content = re.sub(r'== ?Références? ?==.*', '', content, flags=re.DOTALL)
-        content = re.sub(r'== ?Liens? externes? ?==.*', '', content, flags=re.DOTALL)
-        content = re.sub(r'== ?Voir aussi ?==.*', '', content, flags=re.DOTALL)
+        if not content:
+            return ""
+
+        # Supprimer les sections de fin (références, liens externes, etc.)
+        # Utiliser une approche plus prudente : chercher la PREMIÈRE occurrence
+        patterns = [
+            r'==\s*Références?\s*==',
+            r'==\s*Liens?\s+externes?\s*==',
+            r'==\s*Voir\s+aussi\s*==',
+            r'==\s*Sources?\s*==',
+            r'==\s*Notes?\s+et\s+références?\s*==',
+        ]
+
+        # Trouver la position la plus proche d'une de ces sections
+        min_pos = len(content)
+        for pattern in patterns:
+            match = re.search(pattern, content, flags=re.IGNORECASE)
+            if match and match.start() < min_pos:
+                min_pos = match.start()
+
+        # Couper le contenu à cette position
+        if min_pos < len(content) and min_pos > 500:
+            content = content[:min_pos]
 
         # Nettoyer les espaces multiples
         content = re.sub(r'\s+', ' ', content)
+        content = content.strip()
 
-        return content.strip()[:3000]  # Limiter à 3000 caractères
+        # Limiter à 3000 caractères SEULEMENT si le contenu est plus long
+        if len(content) > 3000:
+            content = content[:3000]
+
+        return content
 
     def _create_excerpt(self, content: str, max_length: int = 250) -> str:
         """Crée un excerpt du contenu"""
@@ -220,7 +263,7 @@ class MediaWikiCrawler:
         }
 
         async with aiohttp.ClientSession(headers=headers) as session:
-            # 1. Récupérer tous les IDs de pages
+            # 1. Récupérer tous les IDs de pages (articles uniquement, sans redirections)
             page_ids = await self.get_all_page_ids(session)
 
             if not page_ids:
@@ -228,8 +271,8 @@ class MediaWikiCrawler:
                 return []
 
             # Limiter si max_pages est défini
-            max_pages = self.site_config.get('max_pages')
-            if max_pages and len(page_ids) > max_pages:
+            max_pages = self.site_config.get('max_pages', 0)
+            if max_pages > 0 and len(page_ids) > max_pages:
                 logger.info(f"⚠️  Limitation à {max_pages} pages (sur {len(page_ids)})")
                 page_ids = page_ids[:max_pages]
 
@@ -316,53 +359,3 @@ class MediaWikiCrawler:
                 return True
 
         return False
-
-
-# Fonction à ajouter dans crawler.py pour l'intégration
-
-async def crawl_mediawiki_async(context):
-    """Point d'entrée pour crawler un wiki MediaWiki"""
-    from meilisearchcrawler.mediawiki_crawler import MediaWikiCrawler
-
-    crawler = MediaWikiCrawler(context)
-    documents = await crawler.crawl()
-
-    if not documents:
-        return
-
-    # Génération des embeddings et indexation (même logique que crawl_json_api_async)
-    logger.info(f"⚙️  Génération des embeddings pour {len(documents)} documents...")
-
-    if use_embeddings:
-        from meilisearchcrawler.crawler import get_embeddings_batch, config
-
-        all_embeddings = []
-        texts_to_embed = [
-            f"{doc.get('title', '')}\n{doc.get('content', '')}".strip()
-            for doc in documents
-        ]
-
-        for i in range(0, len(texts_to_embed), config.GEMINI_EMBEDDING_BATCH_SIZE):
-            batch_texts = texts_to_embed[i:i + config.GEMINI_EMBEDDING_BATCH_SIZE]
-            batch_embeddings = get_embeddings_batch(batch_texts)
-
-            if batch_embeddings:
-                all_embeddings.extend(batch_embeddings)
-            else:
-                all_embeddings.extend([None] * len(batch_texts))
-
-        if len(all_embeddings) == len(documents):
-            for doc, embedding in zip(documents, all_embeddings):
-                if embedding:
-                    doc["_vectors"] = {"default": embedding}
-
-    # Indexation par lots
-    from meilisearchcrawler.crawler import index, config
-
-    for i in range(0, len(documents), config.BATCH_SIZE):
-        batch_docs = documents[i:i + config.BATCH_SIZE]
-        try:
-            index.add_documents(batch_docs)
-            logger.info(f"📦 Batch de {len(batch_docs)} documents indexé")
-        except Exception as e:
-            logger.error(f"❌ Erreur indexation batch: {e}")

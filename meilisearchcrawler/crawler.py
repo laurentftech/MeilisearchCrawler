@@ -806,8 +806,8 @@ async def process_page(session: ClientSession, url: str, context: CrawlContext, 
 
 
 async def crawl_site_html_async(context: CrawlContext):
-    base_url = context.site["crawl"].replace("*", "")
-    max_pages = context.site.get("max_pages", 200)
+    base_url = context.site["crawl"].replace("*", "") # Le .get() avec 0 comme défaut signifie "pas de limite"
+    max_pages = context.site.get("max_pages", 0)
 
     logger.info(f"🚀 Démarrage crawl async '{context.site['name']}' -> {base_url}")
     logger.info(
@@ -838,17 +838,20 @@ async def crawl_site_html_async(context: CrawlContext):
     }
 
     context.stats.pbar = tqdm(
-        total=max_pages,
+        total=max_pages if max_pages > 0 else None, # Barre de progression infinie si pas de limite
         desc=f"🔍 {context.site['name']}",
         unit="pages",
         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
     )
 
     async with ClientSession(timeout=timeout, connector=connector, headers=headers) as session:
-        while (to_visit or in_progress) and context.stats.pages_visited < max_pages:
+        while to_visit or in_progress:
+            if max_pages > 0 and context.stats.pages_visited >= max_pages:
+                break
             batch = []
-            while to_visit and len(batch) < config.CONCURRENT_REQUESTS and context.stats.pages_visited + len(
-                    in_progress) < max_pages:
+            while to_visit and len(batch) < config.CONCURRENT_REQUESTS:
+                if max_pages > 0 and context.stats.pages_visited + len(in_progress) >= max_pages:
+                    break
                 url, depth = to_visit.pop()
 
                 if url in visited or url in in_progress:

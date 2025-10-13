@@ -131,7 +131,7 @@ The `config/sites.yml` file allows you to define a list of sites to crawl. Each 
 - `crawl`: (String) The starting URL for the crawl.
 - `type`: (String) The type of content. Can be `html` or `json`.
 - `delay`: (Float, optional) Minimum delay in seconds between requests for this site.
-- `max_pages`: (Integer) The maximum number of pages to crawl for this site.
+- `max_pages`: (Integer) The maximum number of pages to crawl. Set to `0` or omit for no limit.
 - `depth`: (Integer) The maximum depth to follow links from the starting URL.
 - `selector`: (String, optional) For HTML sites, a specific CSS selector (e.g., `.main-article`) to pinpoint the main content area.
 - `lang`: (String, optional) For JSON sources, specifies the language of the content (e.g., "en", "fr").

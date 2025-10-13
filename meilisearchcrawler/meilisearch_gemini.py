@@ -26,6 +26,9 @@ if not gemini_logger.handlers:
     handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     gemini_logger.addHandler(handler)
 
+class QuotaExceededError(Exception):
+    """Exception levée lorsque le quota de l'API Gemini est dépassé."""
+    pass
 
 class MeiliSearchGemini:
     """Gère l'indexation avec embeddings Gemini dans MeiliSearch."""
@@ -53,6 +56,9 @@ class MeiliSearchGemini:
             result = self.gemini_client.models.embed_content(model=self.embedding_model, contents=texts)
             return [embedding.values for embedding in result.embeddings]
         except Exception as e:
+            if "quota" in str(e).lower():
+                gemini_logger.error(f"🛑 Quota Gemini dépassé: {e}")
+                raise QuotaExceededError(str(e))
             gemini_logger.error(f"Erreur API Gemini: {e}")
             return [[] for _ in texts] # Retourner une liste vide en cas d'erreur
 
@@ -91,7 +97,8 @@ class MeiliSearchGemini:
 
         with tqdm(total=total_missing, desc="Génération des Embeddings", unit="doc", file=sys.stdout) as pbar:
             processed_docs_count = 0
-            while processed_docs_count < total_missing:
+            quota_exceeded = False
+            while processed_docs_count < total_missing and not quota_exceeded:
                 try:
                     docs_to_process = index.get_documents({
                         'filter': '_vectors NOT EXISTS',
@@ -112,7 +119,12 @@ class MeiliSearchGemini:
                 ]
                 doc_ids = [doc.id for doc in docs_to_process]
 
-                embeddings = self.get_embeddings_batch(texts_to_embed)
+                try:
+                    embeddings = self.get_embeddings_batch(texts_to_embed)
+                except QuotaExceededError:
+                    print("\n🛑 Quota Gemini dépassé. Arrêt du processus d'embedding.")
+                    quota_exceeded = True
+                    continue
 
                 docs_to_update = []
                 for doc_id, embedding in zip(doc_ids, embeddings):
@@ -128,7 +140,10 @@ class MeiliSearchGemini:
                 processed_docs_count += len(docs_to_process)
                 pbar.update(len(docs_to_process))
 
-        print(f"\n✅ Processus terminé. {processed_docs_count} documents ont été traités.")
+        if quota_exceeded:
+            print(f"\n⚠️  Processus interrompu après avoir traité {processed_docs_count} documents en raison du dépassement du quota Gemini.")
+        else:
+            print(f"\n✅ Processus terminé. {processed_docs_count} documents ont été traités.")
 
 
 if __name__ == "__main__":
