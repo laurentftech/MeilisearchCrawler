@@ -1,5 +1,5 @@
 # meilisearchcrawler/mediawiki_crawler.py
-# Extension pour crawler Vikidia/Wikipedia via leur API
+# Extension pour crawler Vikidia/Wikipedia via leur API avec embeddings
 
 import aiohttp
 import asyncio
@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 import logging
 from datetime import datetime
 import time
+from google import genai
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,24 @@ class MediaWikiCrawler:
         self.api_url = self.site_config.get('api_url', self._build_api_url())
         self.namespaces = self.site_config.get('namespaces', [0])  # 0 = articles principaux
         self.batch_size = self.site_config.get('api_batch_size', 50)
+
+        # Initialiser le client Gemini si disponible
+        self.gemini_client = None
+        self.embedding_model = "text-embedding-004"
+
+        # Récupérer la clé Gemini depuis les variables d'environnement
+        import os
+        gemini_api_key = os.getenv('GEMINI_API_KEY')
+
+        if gemini_api_key:
+            try:
+                self.gemini_client = genai.Client(api_key=gemini_api_key)
+                logger.info("✓ Client Gemini initialisé pour les embeddings")
+            except Exception as e:
+                logger.warning(f"⚠️  Impossible d'initialiser Gemini: {e}")
+                logger.warning("   Les documents seront indexés SANS embeddings")
+        else:
+            logger.warning("⚠️  GEMINI_API_KEY non trouvée - embeddings désactivés")
 
     def _build_api_url(self) -> str:
         """Construit l'URL de l'API à partir de l'URL du wiki"""
@@ -75,6 +94,24 @@ class MediaWikiCrawler:
 
         logger.info(f"✅ {len(all_page_ids)} articles trouvés (namespace {self.namespaces}, sans redirections)")
         return all_page_ids
+
+    def get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
+        """Génère des embeddings pour un lot de textes"""
+        if not self.gemini_client:
+            return [[] for _ in texts]
+
+        try:
+            result = self.gemini_client.models.embed_content(
+                model=self.embedding_model,
+                contents=texts
+            )
+            return [embedding.values for embedding in result.embeddings]
+        except Exception as e:
+            if "quota" in str(e).lower():
+                logger.error(f"🛑 Quota Gemini dépassé: {e}")
+            else:
+                logger.error(f"❌ Erreur API Gemini: {e}")
+            return [[] for _ in texts]
 
     async def fetch_pages_batch(self, session: aiohttp.ClientSession,
                                 page_ids: List[int]) -> List[Dict]:
@@ -131,7 +168,6 @@ class MediaWikiCrawler:
 
                     content = self._clean_content(content)
 
-                    # Ancien seuil 10 → assoupli
                     if len(content.strip()) < 50:
                         stats['stub'] += 1
                         continue
@@ -193,7 +229,6 @@ class MediaWikiCrawler:
             return ""
 
         # Supprimer les sections de fin (références, liens externes, etc.)
-        # Utiliser une approche plus prudente : chercher la PREMIÈRE occurrence
         patterns = [
             r'==\s*Références?\s*==',
             r'==\s*Liens?\s+externes?\s*==',
@@ -202,22 +237,18 @@ class MediaWikiCrawler:
             r'==\s*Notes?\s+et\s+références?\s*==',
         ]
 
-        # Trouver la position la plus proche d'une de ces sections
         min_pos = len(content)
         for pattern in patterns:
             match = re.search(pattern, content, flags=re.IGNORECASE)
             if match and match.start() < min_pos:
                 min_pos = match.start()
 
-        # Couper le contenu à cette position
         if min_pos < len(content) and min_pos > 500:
             content = content[:min_pos]
 
-        # Nettoyer les espaces multiples
         content = re.sub(r'\s+', ' ', content)
         content = content.strip()
 
-        # Limiter à 3000 caractères SEULEMENT si le contenu est plus long
         if len(content) > 3000:
             content = content[:3000]
 
@@ -255,6 +286,10 @@ class MediaWikiCrawler:
         logger.info(f"🚀 Crawl MediaWiki de '{self.site_config['name']}'")
         logger.info(f"   API: {self.api_url}")
         logger.info(f"   Namespaces: {self.namespaces}")
+        if self.gemini_client:
+            logger.info(f"   🤖 Embeddings: Gemini {self.embedding_model}")
+        else:
+            logger.warning("   ⚠️  Embeddings: DÉSACTIVÉS (pas de clé Gemini)")
 
         all_documents = []
 
@@ -263,7 +298,7 @@ class MediaWikiCrawler:
         }
 
         async with aiohttp.ClientSession(headers=headers) as session:
-            # 1. Récupérer tous les IDs de pages (articles uniquement, sans redirections)
+            # 1. Récupérer tous les IDs de pages
             page_ids = await self.get_all_page_ids(session)
 
             if not page_ids:
@@ -291,51 +326,84 @@ class MediaWikiCrawler:
             for batch in batches:
                 documents = await self.fetch_pages_batch(session, batch)
 
+                if not documents:
+                    await self.context.stats.increment('pages_visited', len(batch))
+                    self.context.stats.pbar.update(len(batch))
+                    continue
+
+                # Préparer les textes pour les embeddings
+                texts_to_embed = []
+                docs_for_indexing = []
+
                 for doc in documents:
-                    # Générer content_hash
                     content_hash = hashlib.md5(
                         f"{doc['title']}|{doc['content']}".encode()
                     ).hexdigest()
 
                     doc_id = hashlib.md5(doc['url'].encode()).hexdigest()
 
-                    # Vérifier le cache
                     should_index = (
                             self.context.force_recrawl or
                             not self._should_skip_page(doc['url'], content_hash)
                     )
 
                     if should_index:
-                        now_iso = datetime.now().isoformat()
-
-                        final_doc = {
-                            "id": doc_id,
-                            "site": self.site_config["name"],
-                            "url": doc['url'],
-                            "title": doc['title'],
-                            "excerpt": doc['excerpt'],
-                            "content": doc['content'],
-                            "images": doc['images'],
-                            "lang": self.site_config.get("lang", "fr"),
-                            "timestamp": int(time.time()),
-                            "indexed_at": now_iso,
-                            "last_crawled_at": now_iso,
-                            "content_hash": content_hash,
-                        }
-
-                        all_documents.append(final_doc)
-                        await self.context.stats.increment('pages_indexed')
-
-                        # Mettre à jour le cache
-                        async with self.context.cache_lock:
-                            self.context.cache[doc['url']] = {
-                                'content_hash': content_hash,
-                                'last_crawl': time.time(),
-                                'doc_id': doc_id,
-                                'crawl_date': now_iso
-                            }
+                        # Texte pour l'embedding : titre + contenu
+                        text_for_embedding = f"{doc['title']}\n{doc['content']}"
+                        texts_to_embed.append(text_for_embedding)
+                        docs_for_indexing.append((doc, doc_id, content_hash))
                     else:
                         await self.context.stats.increment('pages_skipped_cache')
+
+                # Générer tous les embeddings en une seule requête
+                embeddings = []
+                if texts_to_embed and self.gemini_client:
+                    try:
+                        embeddings = self.get_embeddings_batch(texts_to_embed)
+                        if embeddings and len(embeddings) != len(texts_to_embed):
+                            logger.warning(
+                                f"⚠️  Nombre d'embeddings ({len(embeddings)}) != documents ({len(texts_to_embed)})")
+                            embeddings = []
+                    except Exception as e:
+                        logger.error(f"❌ Erreur génération embeddings: {e}")
+                        embeddings = []
+
+                # Créer les documents finaux avec embeddings
+                now_iso = datetime.now().isoformat()
+
+                for idx, (doc, doc_id, content_hash) in enumerate(docs_for_indexing):
+                    final_doc = {
+                        "id": doc_id,
+                        "site": self.site_config["name"],
+                        "url": doc['url'],
+                        "title": doc['title'],
+                        "excerpt": doc['excerpt'],
+                        "content": doc['content'],
+                        "images": doc['images'],
+                        "lang": self.site_config.get("lang", "fr"),
+                        "timestamp": int(time.time()),
+                        "indexed_at": now_iso,
+                        "last_crawled_at": now_iso,
+                        "content_hash": content_hash,
+                    }
+
+                    # Ajouter l'embedding si disponible
+                    if embeddings and idx < len(embeddings) and embeddings[idx]:
+                        final_doc["_vectors"] = {
+                            "default": embeddings[idx]
+                        }
+
+                    all_documents.append(final_doc)
+                    await self.context.stats.increment('pages_indexed')
+
+                    # Mettre à jour le cache
+                    async with self.context.cache_lock:
+                        self.context.cache[doc['url']] = {
+                            'content_hash': content_hash,
+                            'last_crawl': time.time(),
+                            'doc_id': doc_id,
+                            'crawl_date': now_iso
+                        }
 
                 await self.context.stats.increment('pages_visited', len(batch))
                 self.context.stats.pbar.update(len(batch))
@@ -343,6 +411,10 @@ class MediaWikiCrawler:
             self.context.stats.pbar.close()
 
         logger.info(f"✅ {len(all_documents)} documents à indexer")
+        if self.gemini_client:
+            docs_with_embeddings = sum(1 for doc in all_documents if '_vectors' in doc)
+            logger.info(f"   🤖 {docs_with_embeddings} documents avec embeddings")
+
         return all_documents
 
     def _should_skip_page(self, url: str, content_hash: str) -> bool:
