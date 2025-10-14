@@ -5,12 +5,19 @@ import plotly.express as px
 from datetime import datetime
 from urllib.parse import urlparse
 import time
-import json
+import sys
+import os
+
+# Ajouter le répertoire racine au path pour l'import de CacheDB
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
 
 from src.meilisearch_client import get_meili_client
-from src.config import INDEX_NAME, CACHE_FILE
+from src.config import INDEX_NAME
 from src.state import is_crawler_running
 from src.i18n import get_translator
+from meilisearchcrawler.cache_db import CacheDB
 
 # Initialiser le traducteur
 if 'lang' not in st.session_state:
@@ -24,13 +31,15 @@ meili_client = get_meili_client()
 running = is_crawler_running()
 
 @st.cache_data(ttl=60)
-def load_cache_urls():
+def load_cache_urls_from_db():
+    """Charge les URLs depuis la base de données SQLite."""
     try:
-        with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-            cache_data = json.load(f)
-            return {url: data for url, data in cache_data.items() if url != '_meta'}
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        db_path = os.path.join(BASE_DIR, 'data', 'crawler_cache.db')
+        cache_db = CacheDB(db_path=db_path)
+        return cache_db.get_all_urls()
+    except Exception as e:
+        st.error(f"Erreur de chargement du cache DB: {e}")
+        return []
 
 if not meili_client:
     st.error(t("tree.error_meili_connection"))
@@ -106,13 +115,16 @@ else:
                     'last_crawl_days': last_crawl_days, 'last_crawl_text': last_crawl_text, 'status': 'indexed'
                 }
 
-            cached_data = load_cache_urls()
-            for url, cache_info in cached_data.items():
+            cached_data = load_cache_urls_from_db()
+            for cache_info in cached_data:
+                url = cache_info['url']
                 if url not in data_map:
-                    if filter_site != t("tree.all_sites") and filter_site.lower() not in url.lower(): continue
+                    site_name = cache_info.get('site_name')
+                    if filter_site != t("tree.all_sites") and filter_site != site_name: continue
+                    
                     parsed = urlparse(url)
                     path_parts = [p for p in parsed.path.split('/') if p]
-                    last_crawl_timestamp = cache_info.get('last_crawl', 0) if isinstance(cache_info, dict) else 0
+                    last_crawl_timestamp = cache_info.get('last_crawl', 0)
                     crawl_age_days, crawl_text = (999, t("tree.unknown_date"))
                     if last_crawl_timestamp:
                         crawl_date = datetime.fromtimestamp(last_crawl_timestamp)
@@ -120,7 +132,7 @@ else:
                         if crawl_age_days < 1: crawl_text = t("tree.crawled_today")
                         else: crawl_text = t("tree.crawled_days_ago").format(days=crawl_age_days)
                     data_map[url] = {
-                        'site': parsed.netloc, 'path_parts': path_parts,
+                        'site': site_name or parsed.netloc, 'path_parts': path_parts,
                         'page': path_parts[-1][:40] if path_parts else t("tree.homepage"), 'url': url,
                         'title': t("tree.pending_indexing"), 'freshness_days': 9999, 'freshness_category': t("tree.pending_status"),
                         'freshness_color': "#4b5563", 'last_crawl_days': crawl_age_days, 'last_crawl_text': crawl_text, 'status': 'pending'

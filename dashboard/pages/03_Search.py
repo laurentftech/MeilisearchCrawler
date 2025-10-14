@@ -1,181 +1,149 @@
 import streamlit as st
-import os
-from google import genai
+from datetime import datetime
+from langdetect import detect, LangDetectException
 
 from src.meilisearch_client import get_meili_client
 from src.config import INDEX_NAME
 from src.i18n import get_translator
-
 
 # Initialiser le traducteur
 if 'lang' not in st.session_state:
     st.session_state.lang = "fr"
 t = get_translator(st.session_state.lang)
 
-st.header(t("search.title"))
+st.set_page_config(
+    page_title=t("search.page_title"),
+    layout="wide"
+)
 
-# --- Gemini Setup ---
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-EMBEDDING_MODEL = "text-embedding-004"
+st.title(t("search.title"))
+st.markdown(t("search.subtitle"))
 
-@st.cache_resource
-def get_gemini_client():
-    """Initialise et met en cache le client Gemini."""
-    if not GEMINI_API_KEY:
-        return None
-    try:
-        return genai.Client(api_key=GEMINI_API_KEY)
-    except Exception as e:
-        st.error(f"Erreur d'initialisation de Gemini : {e}")
-        return None
-
-gemini_client = get_gemini_client()
-
+# --- Initialisation ---
 meili_client = get_meili_client()
 
 if not meili_client:
     st.error(t("search.error_meili_connection"))
-else:
-    try:
-        index = meili_client.index(INDEX_NAME)
+    st.stop()
 
-        @st.cache_data(ttl=3600) # On cache pour 1h pour éviter les appels répétés
-        def ensure_embedder_is_configured(_index):
-            """Vérifie et configure l'embedder 'default' si nécessaire."""
-            try:
-                settings = _index.get_settings()
-                embedders = settings.get('embedders', {})
-                if 'default' in embedders:
-                    return True # Déjà configuré
+try:
+    index = meili_client.index(INDEX_NAME)
+    stats = index.get_stats()
+    if stats.number_of_documents == 0:
+        st.warning(t("search.warning_no_documents"))
+        st.stop()
+except Exception as e:
+    st.error(f"{t('search.error_index_access')}: {e}")
+    st.stop()
 
-                st.toast("Configuration de l'index pour la recherche sémantique...", icon="⚙️")
-                task = _index.update_embedders({
-                    'default': {
-                        'source': 'userProvided',
-                        'dimensions': 768
-                    }
-                })
-                _index.wait_for_task(task.task_uid, timeout_in_ms=30000) # Augmentation du timeout à 30s
-                return True
-            except Exception as e:
-                st.error(f"Impossible de configurer l'embedder : {e}")
-                return False
+# --- Barre de recherche et filtres ---
+with st.form(key="search_form"):
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        query = st.text_input(t("search.search_box_label"), "", placeholder=t("search.search_box_placeholder"))
+    with col2:
+        use_hybrid = st.checkbox(t("search.use_hybrid_search"), value=True, help=t("search.hybrid_search_help"))
+        semantic_ratio = st.slider(
+            t("search.semantic_ratio_label"),
+            min_value=0.0,
+            max_value=1.0,
+            value=0.8,
+            step=0.1,
+            help=t("search.semantic_ratio_help"),
+            disabled=not use_hybrid
+        )
+    
+    # Ajout du bouton de soumission
+    submitted = st.form_submit_button(label=t("search.search_button_label"), type="primary")
 
-        @st.cache_data(ttl=300)
-        def get_available_sites(_index):
-            """Fetches the list of sites from Meilisearch facets."""
-            try:
-                result = _index.search("", {'facets': ['site'], 'limit': 0})
-                if 'facetDistribution' in result and 'site' in result['facetDistribution']:
-                    return list(result['facetDistribution']['site'].keys())
-                return []
-            except Exception as e:
-                st.warning(t("search.warning_sites_fetch").format(e=e))
-                return []
+# --- Logique de recherche ---
+if submitted and query:
+    with st.spinner(t("search.spinner_searching")):
+        search_params = {
+            "limit": 20,
+            "attributesToRetrieve": ['title', 'url', 'excerpt', 'site', 'images', 'timestamp'],
+            "attributesToHighlight": ['title', 'excerpt'],
+            "highlightPreTag": "**",
+            "highlightPostTag": "**"
+        }
 
-        # S'assurer que l'embedder est prêt avant de continuer
-        if gemini_client:
-            ensure_embedder_is_configured(index)
+        # --- Filtres intelligents ---
+        filters = []
 
-        available_sites = get_available_sites(index)
-
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            query = st.text_input(
-                t("search.search_label"),
-                placeholder=t("search.search_placeholder"),
-                key="search_query"
-            )
-
-        # Options de recherche
-        search_mode = "keyword"
-        if gemini_client:
-            with col2:
-                search_mode_option = st.radio(
-                    t("search.search_mode"),
-                    [t("search.mode_keyword"), t("search.mode_semantic")],
-                    horizontal=True,
-                    help=t("search.semantic_mode_help")
-                )
-                if search_mode_option == t("search.mode_semantic"):
-                    search_mode = "semantic"
-        
-        semantic_ratio = 0.75
-        if search_mode == "semantic":
-            semantic_ratio = st.slider(
-                label=t("search.semantic_ratio_label"),
-                min_value=0.0,
-                max_value=1.0,
-                value=0.75,
-                step=0.05,
-                help=t("search.semantic_ratio_help")
-            )
-
-        selected_sites = st.multiselect(t("search.filter_by_site"), options=available_sites)
-
-        @st.cache_data(show_spinner=t("search.embedding_spinner"))
-        def get_query_embedding(query_text):
-            """Génère et met en cache l'embedding pour une requête."""
-            if not gemini_client:
-                return None
-            result = gemini_client.models.embed_content(
-                model=f"models/{EMBEDDING_MODEL}",
-                contents=[query_text]
-            )
-            return result.embeddings[0].values
-
-        if query:
-            vector = None
-            if search_mode == "semantic":
-                vector = get_query_embedding(query)
-                if not vector:
-                    st.error(t("search.error_embedding"))
-
-            search_params = {
-                'limit': 20,
-                'attributesToHighlight': ['title', 'excerpt'],
-                'highlightPreTag': '<mark>',
-                'highlightPostTag': '</mark>'
-            }
-            if selected_sites:
-                filters = ' OR '.join([f'site = "{site}"' for site in selected_sites])
-                search_params['filter'] = filters
-            
-            if vector:
-                search_params['vector'] = vector
-                search_params['hybrid'] = {
-                    "semanticRatio": semantic_ratio,
-                    "embedder": "default"
-                }
-
-            with st.spinner(t("search.searching_spinner")):
-                search_results = index.search(query, search_params)
-
-            col1, col2 = st.columns(2)
-            col1.metric(t("search.results_found"), search_results.get('estimatedTotalHits', 0))
-            col2.metric(t("search.search_time"), f"{search_results.get('processingTimeMs', 0)}ms")
-
-            if search_results.get('hits'):
-                st.markdown("---")
-                for i, hit in enumerate(search_results['hits'], 1):
-                    formatted = hit.get('_formatted', {})
-                    title = formatted.get('title', hit.get('title', t("search.no_title")))
-                    url = hit.get('url', '#')
-                    excerpt = formatted.get('excerpt', hit.get('excerpt', ''))
-
-                    st.markdown(f"""
-                    <div style="border-left: 3px solid #667eea; padding-left: 15px; margin-bottom: 20px;">
-                        <h4 style="margin-bottom: 5px;">
-                            {i}. <a href="{url}" target="_blank">{title}</a>
-                        </h4>
-                        <small style="color: #666;">
-                            <b>{t('search.result_site_label')}</b> {hit.get('site', 'N/A')} | <b>{t('search.result_url_label')}</b> {url[:60]}...
-                        </small>
-                        <p style="margin-top: 10px;">{excerpt[:300]}...</p>
-                    </div>
-                    """, unsafe_allow_html=True)
+        # --- Détection intelligente de la langue de la requête ---
+        try:
+            # On détecte la langue de la requête de l'utilisateur
+            query_lang = detect(query)
+            # On s'assure que la langue détectée est l'une de celles que nous gérons
+            if query_lang in ['fr', 'en']:
+                filters.append(f"lang = {query_lang}")
+                st.caption(f"Langue de recherche détectée : `{query_lang.upper()}`")
             else:
-                st.info(t("search.no_results"))
+                # Si la langue n'est pas gérée, on se rabat sur la langue de l'interface
+                filters.append(f"lang = {st.session_state.get('lang', 'fr')}")
+        except LangDetectException:
+            # Si la détection échoue (requête trop courte), on utilise la langue de l'interface
+            filters.append(f"lang = {st.session_state.get('lang', 'fr')}")
 
-    except Exception as e:
-        st.error(t("search.error_search").format(e=e))
+        # --- Filtre par mots-clés pour la pertinence ---
+        # S'assure que les mots de la requête sont présents, puis la sémantique classe les résultats
+        keywords = [f'"{word}"' for word in query.split() if len(word) > 2]
+        if keywords:
+            filters.append(f"title IN [{', '.join(keywords)}] OR content IN [{', '.join(keywords)}]")
+
+        search_params["filter"] = " AND ".join(filters)
+
+        search_query = query
+        if use_hybrid:
+            # Pour les versions récentes de Meilisearch, la requête 'q' est au premier niveau,
+            # et 'hybrid' ne contient que les options comme 'semanticRatio'.
+            # Il faut aussi spécifier l'embedder à utiliser pour la requête.
+            search_params["hybrid"] = {
+                "semanticRatio": semantic_ratio, "embedder": "query"
+            }
+            # search_query reste la requête principale
+
+        try:
+            response = index.search(search_query, search_params)
+            hits = response['hits']
+            st.success(t("search.results_summary").format(
+                count=len(hits),
+                total=response['estimatedTotalHits'],
+                time=response['processingTimeMs']
+            ))
+            st.markdown("---")
+
+            # --- Affichage des résultats ---
+            if not hits:
+                st.warning(t("search.no_results_found"))
+            else:
+                for hit in hits:
+                    col1, col2 = st.columns([1, 4])
+                    with col1:
+                        if hit.get('images') and isinstance(hit['images'], list) and len(hit['images']) > 0:
+                            st.image(hit['images'][0]['url'], width=150)
+                        else:
+                            st.image("https://via.placeholder.com/150?text=No+Image", width=150)
+
+                    with col2:
+                        title = hit.get('_formatted', {}).get('title', hit.get('title', t('search.no_title')))
+                        excerpt = hit.get('_formatted', {}).get('excerpt', hit.get('excerpt', ''))
+                        url = hit.get('url', '#')
+                        site = hit.get('site', t('search.unknown_site'))
+                        timestamp = hit.get('timestamp')
+
+                        st.markdown(f"#### [{title}]({url})")
+                        st.markdown(f"<small>{t('search.site')}: **{site}**</small>", unsafe_allow_html=True)
+                        if timestamp:
+                            date = datetime.fromtimestamp(timestamp)
+                            st.markdown(f"<small>{t('search.published_on')}: {date.strftime('%d/%m/%Y')}</small>", unsafe_allow_html=True)
+
+                        st.markdown(excerpt, unsafe_allow_html=True)
+
+                    st.markdown("---")
+
+        except Exception as e:
+            st.error(f"{t('search.error_during_search')}: {e}")
+
+elif not query:
+    st.info(t("search.info_start_searching"))

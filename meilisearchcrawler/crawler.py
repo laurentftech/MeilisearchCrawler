@@ -1,5 +1,5 @@
 # ---------------------------
-# KidSearch Crawler - Version Complète
+# KidSearch Crawler - Version Complète avec Indexation Progressive
 # ---------------------------
 import yaml
 import aiohttp
@@ -24,6 +24,7 @@ from tqdm.asyncio import tqdm
 from tqdm import tqdm as tqdm_sync
 from google import genai as gemini
 import trafilatura
+from meilisearchcrawler.cache_db import CacheDB
 
 
 # ---------------------------
@@ -66,11 +67,11 @@ class Config:
     MEILI_URL = os.getenv("MEILI_URL")
     MEILI_KEY = os.getenv("MEILI_KEY")
     INDEX_NAME = os.getenv("INDEX_NAME", "kidsearch")
-    CACHE_FILE = os.path.join(DATA_DIR, "crawler_cache.json")
     MAX_RETRIES = int(os.getenv('MAX_RETRIES', 3))
     TIMEOUT = int(os.getenv('TIMEOUT', 15))
     DEFAULT_DELAY = float(os.getenv('DEFAULT_DELAY', 0.5))
     BATCH_SIZE = int(os.getenv('BATCH_SIZE', 20))
+    INDEXING_BATCH_SIZE = int(os.getenv('INDEXING_BATCH_SIZE', 100))
     CACHE_DAYS = int(os.getenv('CACHE_DAYS', 7))
     CONCURRENT_REQUESTS = int(os.getenv('CONCURRENT_REQUESTS', 5))
     MAX_CONNECTIONS = int(os.getenv('MAX_CONNECTIONS', 100))
@@ -96,7 +97,7 @@ gemini_client = None
 use_embeddings = False
 
 # ---------------------------
-# MeiliSearch Setup
+# MeiliSearch & Cache Setup
 # ---------------------------
 try:
     client = Client(config.MEILI_URL, config.MEILI_KEY)
@@ -106,6 +107,9 @@ except Exception as e:
     logger.error(f"❌ Erreur connexion MeiliSearch: {e}")
     exit(1)
 
+# Initialisation du cache SQLite
+cache_db = CacheDB()
+logger.info("✅ Cache SQLite initialisé")
 
 def update_meilisearch_settings(index, with_embeddings=False):
     logger.info("⚙️ Mise à jour des paramètres MeiliSearch...")
@@ -115,7 +119,7 @@ def update_meilisearch_settings(index, with_embeddings=False):
             'title', 'url', 'site', 'images', 'timestamp', 'excerpt',
             'content', 'lang', 'indexed_at', 'last_crawled_at', 'content_hash'
         ],
-        'filterableAttributes': ['site', 'timestamp', 'lang', 'indexed_at', 'last_crawled_at'],
+    'filterableAttributes': ['site', 'timestamp', 'lang', 'indexed_at', 'last_crawled_at', 'title', 'content'],
         'sortableAttributes': ['timestamp', 'indexed_at', 'last_crawled_at'],
         'rankingRules': ['words', 'typo', 'proximity', 'attribute', 'sort', 'exactness']
     }
@@ -135,7 +139,6 @@ def update_meilisearch_settings(index, with_embeddings=False):
     except Exception as e:
         logger.error(f"❌ Échec mise à jour paramètres: {e}")
 
-
 try:
     indexes = client.get_indexes()
     existing_indexes = [i.uid for i in indexes['results']]
@@ -147,7 +150,6 @@ try:
 
     index = client.index(config.INDEX_NAME)
     logger.info(f"✅ Index '{config.INDEX_NAME}' prêt")
-    # Les settings seront mis à jour dans main_async après analyse des arguments
 
 except Exception as e:
     logger.error(f"❌ Erreur configuration index: {e}")
@@ -170,111 +172,31 @@ except Exception as e:
 
 
 # ---------------------------
-# Cache
+# Cache (via CacheDB)
 # ---------------------------
-def load_cache() -> Dict:
-    if os.path.exists(config.CACHE_FILE):
-        if os.path.getsize(config.CACHE_FILE) == 0:
-            return {'_meta': {'crawls': {}}}
-        try:
-            with open(config.CACHE_FILE, 'r', encoding='utf-8') as f:
-                cache = json.load(f)
-                if '_meta' not in cache:
-                    cache['_meta'] = {'crawls': {}}
-                if 'crawls' not in cache['_meta']:
-                    cache['_meta']['crawls'] = {}
+def start_crawl_session(site_name: str, domain: str):
+    cache_db.start_session(site_name, domain)
 
-                incomplete_sites = []
-                for site_name, crawl_info in cache['_meta']['crawls'].items():
-                    if not crawl_info.get('completed', False):
-                        incomplete_sites.append(site_name)
-
-                if incomplete_sites:
-                    logger.warning(f"⚠️ Crawls incomplets détectés pour: {', '.join(incomplete_sites)}")
-                    urls_to_remove = []
-                    for url in list(cache.keys()):
-                        if url == '_meta':
-                            continue
-                        for site_name in incomplete_sites:
-                            crawl_info = cache['_meta']['crawls'][site_name]
-                            if 'domain' in crawl_info and crawl_info['domain'] in url:
-                                urls_to_remove.append(url)
-                                break
-
-                    for url in urls_to_remove:
-                        del cache[url]
-
-                    for site_name in incomplete_sites:
-                        del cache['_meta']['crawls'][site_name]
-
-                    logger.info(f"   ✓ {len(urls_to_remove)} pages invalidées")
-
-                return cache
-        except Exception as e:
-            logger.warning(f"⚠️ Échec chargement cache: {e}")
-    return {'_meta': {'crawls': {}}}
-
-
-def save_cache(cache: Dict):
-    try:
-        with open(config.CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"❌ Échec sauvegarde cache: {e}")
-
-
-def start_crawl_session(cache: Dict, site_name: str, domain: str):
-    cache['_meta']['crawls'][site_name] = {
-        'started': datetime.now().isoformat(),
-        'completed': False,
-        'domain': domain
-    }
-    save_cache(cache)
-
-
-def complete_crawl_session(cache: Dict, site_name: str, completed: bool = True, resume_urls: Optional[Set[str]] = None):
-    if site_name in cache['_meta']['crawls']:
-        cache['_meta']['crawls'][site_name]['completed'] = completed
-        cache['_meta']['crawls'][site_name]['finished'] = datetime.now().isoformat()
-        if resume_urls:
-            cache['_meta']['crawls'][site_name]['resume_from'] = list(resume_urls)
-        save_cache(cache)
-
+def complete_crawl_session(site_name: str, completed: bool = True, resume_urls: Optional[Set[str]] = None):
+    resume_list = list(resume_urls) if resume_urls else None
+    cache_db.complete_session(site_name, completed, resume_list)
 
 def get_content_hash(content: str, title: str, images: List, excerpt: str) -> str:
     images_str = json.dumps(images, sort_keys=True)
     content_str = f"{title}|{excerpt}|{content}|{images_str}"
     return hashlib.md5(content_str.encode()).hexdigest()
 
+def should_skip_page(url: str, content_hash: str) -> bool:
+    return cache_db.should_skip(url, content_hash, config.CACHE_DAYS)
 
-def should_skip_page(url: str, content_hash: str, cache: Dict) -> bool:
-    if url not in cache:
-        return False
-    cached_data = cache[url]
-    if cached_data.get('content_hash') == content_hash:
-        last_crawl = cached_data.get('last_crawl', 0)
-        days_ago = (time.time() - last_crawl) / (24 * 3600)
-        if days_ago < config.CACHE_DAYS:
-            return True
-    return False
-
-
-def update_cache(cache: Dict, url: str, content_hash: str, doc_id: str, etag: str = None, last_modified: str = None):
-    cache[url] = {
-        'content_hash': content_hash,
-        'last_crawl': time.time(),
-        'doc_id': doc_id,
-        'crawl_date': datetime.now().isoformat(),
-        'etag': etag,
-        'last_modified': last_modified
-    }
+def update_cache(url: str, content_hash: str, doc_id: str, site_name: str, etag: str = None, last_modified: str = None):
+    cache_db.set(url, content_hash, doc_id, etag=etag, last_modified=last_modified, site_name=site_name)
 
 
 # ---------------------------
 # Robots.txt
 # ---------------------------
 robot_parsers: Dict[str, RobotFileParser] = {}
-
 
 def get_robot_parser(url: str) -> Optional[RobotFileParser]:
     parsed_url = urlparse(url)
@@ -296,7 +218,6 @@ def get_robot_parser(url: str) -> Optional[RobotFileParser]:
         parser.allow_all = True
         robot_parsers[domain] = parser
         return parser
-
 
 def get_crawl_delay(url: str) -> float:
     parser = get_robot_parser(url)
@@ -338,26 +259,21 @@ def get_nested_value(data, key_path: str):
         current = current.get(key)
     return current
 
-
 def generate_doc_id(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()
-
 
 def normalize_url(url: str) -> str:
     url = url.split('#')[0]
     url = url.rstrip('/')
     return url
 
-
 def is_same_domain(url1: str, url2: str) -> bool:
     return urlparse(url1).netloc == urlparse(url2).netloc
-
 
 def is_excluded(url: str, patterns: List[str]) -> bool:
     if not patterns:
         return False
     return any(pattern in url for pattern in patterns)
-
 
 def is_valid_url(url: str) -> bool:
     try:
@@ -369,7 +285,6 @@ def is_valid_url(url: str) -> bool:
         return True
     except Exception:
         return False
-
 
 def remove_common_patterns(text: str) -> str:
     patterns_to_remove = [
@@ -387,7 +302,6 @@ def remove_common_patterns(text: str) -> str:
     for pattern in patterns_to_remove:
         text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
     return text.strip()
-
 
 def extract_main_content(soup: BeautifulSoup, html_string: str, site_config: Dict) -> str:
     site_selector = site_config.get('selector')
@@ -438,7 +352,6 @@ def extract_main_content(soup: BeautifulSoup, html_string: str, site_config: Dic
 
     return target_element.get_text(separator=' ', strip=True)
 
-
 def get_title(soup: BeautifulSoup) -> str:
     og_title = soup.find('meta', property='og:title')
     if og_title and og_title.get('content'):
@@ -447,7 +360,6 @@ def get_title(soup: BeautifulSoup) -> str:
         return soup.title.string.strip()
     h1 = soup.find('h1')
     return h1.get_text(strip=True) if h1 else "Sans titre"
-
 
 def create_excerpt(content: str, max_length: int = 250) -> str:
     if not content:
@@ -468,7 +380,6 @@ def create_excerpt(content: str, max_length: int = 250) -> str:
         excerpt = excerpt.rstrip('.!?') + '...'
     return excerpt
 
-
 def clean_text(text: str, max_length: int = 3000) -> str:
     if not text:
         return ""
@@ -477,7 +388,6 @@ def clean_text(text: str, max_length: int = 3000) -> str:
     text = remove_common_patterns(text)
     text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
     return text.strip()[:max_length]
-
 
 def extract_images(soup: BeautifulSoup, base_url: str, max_images: int = 5) -> List[Dict]:
     images = []
@@ -505,6 +415,7 @@ def extract_images(soup: BeautifulSoup, base_url: str, max_images: int = 5) -> L
             seen_urls.add(full_url)
     return images
 
+
 # ---------------------------
 # Gemini Embeddings
 # ---------------------------
@@ -521,6 +432,53 @@ def get_embeddings_batch(texts: List[str]) -> Optional[List[List[float]]]:
     except Exception as e:
         logger.error(f"Erreur API Gemini: {e}")
         return None
+
+
+# ---------------------------
+# Indexation Progressive
+# ---------------------------
+async def index_documents_batch(documents: List[Dict], stats=None):
+    """
+    Indexe un lot de documents dans MeiliSearch avec gestion des embeddings
+    """
+    if not documents:
+        return
+
+    logger.info(f"📦 Indexation de {len(documents)} documents...")
+
+    # Génération des embeddings si activé
+    if use_embeddings and gemini_client:
+        logger.debug(f"   -> Génération de {len(documents)} embeddings...")
+        all_embeddings = []
+        texts_to_embed = [
+            f"{doc.get('title', '')}\n{doc.get('content', '')}".strip()
+            for doc in documents
+        ]
+
+        # Traiter par batches Gemini
+        for i in range(0, len(texts_to_embed), config.GEMINI_EMBEDDING_BATCH_SIZE):
+            batch_texts = texts_to_embed[i:i + config.GEMINI_EMBEDDING_BATCH_SIZE]
+            batch_embeddings = get_embeddings_batch(batch_texts)
+
+            if batch_embeddings:
+                all_embeddings.extend(batch_embeddings)
+            else:
+                all_embeddings.extend([None] * len(batch_texts))
+
+        # Ajouter les embeddings aux documents
+        if len(all_embeddings) == len(documents):
+            for doc, embedding in zip(documents, all_embeddings):
+                if embedding:
+                    doc["_vectors"] = {"default": embedding}
+
+    # Indexation dans MeiliSearch
+    try:
+        index.add_documents(documents)
+        logger.debug(f"   ✓ {len(documents)} documents indexés")
+    except Exception as e:
+        logger.error(f"❌ Erreur indexation: {e}")
+        if stats:
+            await stats.increment('errors', len(documents))
 
 
 # ---------------------------
@@ -645,11 +603,9 @@ class GlobalCrawlStatus:
 
 
 class CrawlContext:
-    def __init__(self, site: Dict, force_recrawl: bool, cache: Dict):
+    def __init__(self, site: Dict, force_recrawl: bool):
         self.site = site
         self.force_recrawl = force_recrawl
-        self.cache = cache
-        self.cache_lock = asyncio.Lock()
         self.processed_hashes: Set[str] = set()
         self.stats = CrawlStats(site['name'])
         self.rate_limiter = RateLimiter(get_crawl_delay(site["crawl"]))
@@ -673,12 +629,11 @@ class RateLimiter:
             self.last_request = time.time()
 
 
-async def fetch_page(session: ClientSession, url: str, rate_limiter: RateLimiter, cache: Dict = None) -> Optional[
-    Tuple[str, str, Dict]]:
+async def fetch_page(session: ClientSession, url: str, rate_limiter: RateLimiter) -> Optional[Tuple[str, str, Dict]]:
     await rate_limiter.wait()
     headers = {}
-    if cache and url in cache:
-        cached_data = cache[url]
+    cached_data = cache_db.get(url)
+    if cached_data:
         if cached_data.get('etag'):
             headers['If-None-Match'] = cached_data['etag']
         if cached_data.get('last_modified'):
@@ -710,7 +665,7 @@ async def fetch_page(session: ClientSession, url: str, rate_limiter: RateLimiter
 
 async def process_page(session: ClientSession, url: str, context: CrawlContext, current_depth: int = 0) -> Tuple[
     Optional[Dict], List[Tuple[str, int]]]:
-    result = await fetch_page(session, url, context.rate_limiter, context.cache if not context.force_recrawl else None)
+    result = await fetch_page(session, url, context.rate_limiter)
     if not result:
         await context.stats.increment('errors')
         return None, []
@@ -747,15 +702,11 @@ async def process_page(session: ClientSession, url: str, context: CrawlContext, 
 
         is_no_index_page = is_excluded(final_url, context.no_index_patterns)
         is_duplicate_content = content_hash in context.processed_hashes
-
-        is_skipped_by_cache = not context.force_recrawl and should_skip_page(final_url, content_hash, context.cache)
-
+        is_skipped_by_cache = not context.force_recrawl and should_skip_page(final_url, content_hash)
         should_index = not is_no_index_page and not is_skipped_by_cache and not is_duplicate_content
-
 
         doc = None
         if should_index and len(content) >= 50:
-            await context.stats.increment('pages_indexed')
             context.processed_hashes.add(content_hash)
 
             lang = "fr"
@@ -779,10 +730,8 @@ async def process_page(session: ClientSession, url: str, context: CrawlContext, 
                 "last_crawled_at": now_iso,
                 "content_hash": content_hash,
             }
-            async with context.cache_lock:
-                update_cache(context.cache, final_url, content_hash, doc_id, metadata['etag'],
-                             metadata['last_modified'])
-                save_cache(context.cache)
+            update_cache(final_url, content_hash, doc_id, context.site["name"], metadata['etag'],
+                         metadata['last_modified'])
         elif is_skipped_by_cache:
             await context.stats.increment('pages_skipped_cache')
         else:
@@ -806,22 +755,22 @@ async def process_page(session: ClientSession, url: str, context: CrawlContext, 
 
 
 async def crawl_site_html_async(context: CrawlContext):
-    base_url = context.site["crawl"].replace("*", "") # Le .get() avec 0 comme défaut signifie "pas de limite"
+    base_url = context.site["crawl"].replace("*", "")
     max_pages = context.site.get("max_pages", 0)
 
     logger.info(f"🚀 Démarrage crawl async '{context.site['name']}' -> {base_url}")
     logger.info(
         f"   Paramètres: max={max_pages}, depth={context.max_depth}, delay={context.rate_limiter.delay:.2f}s, workers={config.CONCURRENT_REQUESTS}")
+    logger.info(f"   📦 Indexation progressive par lots de {config.INDEXING_BATCH_SIZE}")
 
-    documents_to_index = []
+    documents_buffer = []
 
-    crawl_meta = context.cache.get('_meta', {}).get('crawls', {}).get(context.site['name'], {})
-    resume_urls = crawl_meta.get('resume_from')
+    session_data = cache_db.get_session(context.site['name'])
+    resume_urls = session_data.get('resume_urls') if session_data and not session_data.get('completed') else None
 
     if resume_urls and not context.force_recrawl:
         logger.info(f"🔄 Reprise du crawl depuis {len(resume_urls)} URLs précédemment découvertes.")
         to_visit = {(url, 0) for url in resume_urls}
-        del context.cache['_meta']['crawls'][context.site['name']]['resume_from']
     else:
         to_visit = {(normalize_url(base_url), 0)}
 
@@ -838,7 +787,7 @@ async def crawl_site_html_async(context: CrawlContext):
     }
 
     context.stats.pbar = tqdm(
-        total=max_pages if max_pages > 0 else None, # Barre de progression infinie si pas de limite
+        total=max_pages if max_pages > 0 else None,
         desc=f"🔍 {context.site['name']}",
         unit="pages",
         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
@@ -893,7 +842,12 @@ async def crawl_site_html_async(context: CrawlContext):
                 doc, new_links = result
 
                 if doc:
-                    documents_to_index.append(doc) # On ajoute le doc, l'embedding sera fait plus tard
+                    documents_buffer.append(doc)
+
+                    if len(documents_buffer) >= config.INDEXING_BATCH_SIZE:
+                        await index_documents_batch(documents_buffer, context.stats)
+                        await context.stats.increment('pages_indexed', len(documents_buffer))
+                        documents_buffer.clear()
 
                 for link_url, link_depth in new_links:
                     if link_url not in visited and link_url not in in_progress:
@@ -902,48 +856,16 @@ async def crawl_site_html_async(context: CrawlContext):
     context.stats.pbar.close()
     context.stats.discovered_but_not_visited = len(to_visit)
 
-    # Traitement final des documents et indexation
-    if documents_to_index:
-        logger.info(f"⚙️  Finalisation et indexation de {len(documents_to_index)} documents...")
+    if documents_buffer:
+        logger.info(f"📦 Indexation des {len(documents_buffer)} documents restants...")
+        await index_documents_batch(documents_buffer, context.stats)
+        await context.stats.increment('pages_indexed', len(documents_buffer))
+        documents_buffer.clear()
 
-        if use_embeddings:
-            logger.info(f"   -> Génération de {len(documents_to_index)} embeddings via Gemini (par lots de {config.GEMINI_EMBEDDING_BATCH_SIZE})...")
-            all_embeddings = []
-            texts_to_embed = [f"{doc.get('title', '')}\n{doc.get('content', '')}".strip() for doc in documents_to_index]
-
-            for i in range(0, len(texts_to_embed), config.GEMINI_EMBEDDING_BATCH_SIZE):
-                batch_texts = texts_to_embed[i:i + config.GEMINI_EMBEDDING_BATCH_SIZE]
-                batch_embeddings = get_embeddings_batch(batch_texts)
-                if batch_embeddings:
-                    all_embeddings.extend(batch_embeddings)
-                else:
-                    # Si un batch échoue, on ajoute des None pour garder la correspondance de taille
-                    all_embeddings.extend([None] * len(batch_texts))
-
-            if len(all_embeddings) == len(documents_to_index):
-                for doc, embedding in zip(documents_to_index, all_embeddings):
-                    if embedding:
-                        doc["_vectors"] = {"default": embedding}
-            else:
-                logger.error("❌ Échec de la génération des embeddings, les documents seront indexés sans.")
-
-        # Indexation par lots
-        for i in range(0, len(documents_to_index), config.BATCH_SIZE):
-            batch_docs = documents_to_index[i:i + config.BATCH_SIZE]
-            try:
-                index.add_documents(batch_docs)
-                logger.debug(f"📦 Batch de {len(batch_docs)} documents indexé")
-            except Exception as e:
-                logger.error(f"❌ Erreur indexation batch: {e}")
-
-
-    if len(to_visit) > 0 and context.stats.pages_visited >= max_pages:
+    if len(to_visit) > 0 and (max_pages > 0 and context.stats.pages_visited >= max_pages):
         logger.info(f"📝 Sauvegarde de {len(to_visit)} URLs pour une reprise future.")
         resume_urls_set = {url for url, depth in to_visit}
-        complete_crawl_session(context.cache, context.site['name'], completed=False, resume_urls=resume_urls_set)
-
-    # L'ancienne logique de sauvegarde du dernier batch est maintenant gérée ci-dessus
-
+        complete_crawl_session(context.site['name'], completed=False, resume_urls=resume_urls_set)
 
 
 async def crawl_json_api_async(context: CrawlContext):
@@ -951,8 +873,9 @@ async def crawl_json_api_async(context: CrawlContext):
     json_config = context.site["json"]
 
     logger.info(f"🚀 Démarrage crawl JSON '{context.site['name']}' -> {base_url}")
+    logger.info(f"   📦 Indexation progressive par lots de {config.INDEXING_BATCH_SIZE}")
 
-    documents_to_index = []
+    documents_buffer = []
 
     headers = {
         'User-Agent': config.USER_AGENT,
@@ -1039,7 +962,7 @@ async def crawl_json_api_async(context: CrawlContext):
                 excerpt = create_excerpt(content)
 
                 content_hash = get_content_hash(content, title, images, excerpt)
-                should_index = context.force_recrawl or not should_skip_page(url, content_hash, context.cache)
+                should_index = context.force_recrawl or not should_skip_page(url, content_hash)
 
                 if should_index:
                     now_iso = datetime.now().isoformat()
@@ -1058,8 +981,13 @@ async def crawl_json_api_async(context: CrawlContext):
                         "last_crawled_at": now_iso,
                         "content_hash": content_hash,
                     }
-                    documents_to_index.append(doc)
-                    update_cache(context.cache, url, content_hash, doc_id)
+                    documents_buffer.append(doc)
+                    update_cache(url, content_hash, doc_id, context.site["name"])
+
+                    if len(documents_buffer) >= config.INDEXING_BATCH_SIZE:
+                        await index_documents_batch(documents_buffer, context.stats)
+                        await context.stats.increment('pages_indexed', len(documents_buffer))
+                        documents_buffer.clear()
                 else:
                     await context.stats.increment('pages_not_indexed')
 
@@ -1077,40 +1005,28 @@ async def crawl_json_api_async(context: CrawlContext):
 
         context.stats.pbar.close()
 
-        # Traitement final et indexation
-        if documents_to_index:
-            logger.info(f"⚙️  Finalisation et indexation de {len(documents_to_index)} documents...")
-            if use_embeddings:
-                logger.info(f"   -> Génération de {len(documents_to_index)} embeddings via Gemini (par lots de {config.GEMINI_EMBEDDING_BATCH_SIZE})...")
-                all_embeddings = []
-                texts_to_embed = [f"{doc.get('title', '')}\n{doc.get('content', '')}".strip() for doc in documents_to_index]
-
-                for i in range(0, len(texts_to_embed), config.GEMINI_EMBEDDING_BATCH_SIZE):
-                    batch_texts = texts_to_embed[i:i + config.GEMINI_EMBEDDING_BATCH_SIZE]
-                    batch_embeddings = get_embeddings_batch(batch_texts)
-                    if batch_embeddings:
-                        all_embeddings.extend(batch_embeddings)
-                    else:
-                        all_embeddings.extend([None] * len(batch_texts))
-
-                if len(all_embeddings) == len(documents_to_index):
-                    for doc, embedding in zip(documents_to_index, all_embeddings):
-                        if embedding:
-                            doc["_vectors"] = {"default": embedding}
-
-            # Indexation par lots
-            for i in range(0, len(documents_to_index), config.BATCH_SIZE):
-                batch_docs = documents_to_index[i:i + config.BATCH_SIZE]
-                try:
-                    index.add_documents(batch_docs)
-                    await context.stats.increment('pages_indexed', len(batch_docs))
-                except Exception as e:
-                    logger.error(f"❌ Erreur indexation batch: {e}")
-                    await context.stats.increment('errors')
+        if documents_buffer:
+            logger.info(f"📦 Indexation des {len(documents_buffer)} documents restants...")
+            await index_documents_batch(documents_buffer, context.stats)
+            await context.stats.increment('pages_indexed', len(documents_buffer))
+            documents_buffer.clear()
 
     except Exception as e:
         logger.error(f"❌ Erreur traitement JSON pour {context.site['name']}: {e}")
         await context.stats.increment('errors')
+
+
+async def crawl_mediawiki_async(context: CrawlContext):
+    """Point d'entrée pour crawler MediaWiki avec indexation progressive"""
+    from meilisearchcrawler.mediawiki_crawler import MediaWikiCrawler
+
+    crawler = MediaWikiCrawler(context)
+
+    await crawler.crawl_and_index_progressive(
+        meilisearch_index=index,
+        use_embeddings=use_embeddings,
+        indexing_batch_size=config.INDEXING_BATCH_SIZE
+    )
 
 
 def parse_arguments():
@@ -1128,52 +1044,24 @@ def parse_arguments():
 
 
 def show_cache_stats():
-    cache = load_cache()
-    urls_count = len([k for k in cache.keys() if k != '_meta'])
-
-    if urls_count == 0:
+    stats = cache_db.get_stats()
+    if not stats or stats['total_urls'] == 0:
         logger.info("💾 Le cache est vide")
         return
 
     logger.info(f"\n{'=' * 60}")
-    logger.info("📊 Statistiques du cache")
+    logger.info("📊 Statistiques du cache (SQLite)")
     logger.info(f"{'=' * 60}")
-    logger.info(f"📄 Total d'URLs en cache: {urls_count}")
+    logger.info(f"📄 Total d'URLs en cache: {stats['total_urls']}")
 
-    if '_meta' in cache and 'crawls' in cache['_meta']:
-        crawls = cache['_meta']['crawls']
-        if crawls:
-            logger.info(f"\n🔄 Historique des crawls:")
-            for site_name, crawl_info in crawls.items():
-                status = "✅ Complet" if crawl_info.get('completed', False) else "⚠️ Incomplet"
-                started = crawl_info.get('started', 'Inconnu')
-                logger.info(f"   • {site_name}: {status} (démarré le {started[:19]})")
+    if stats.get('sites'):
+        logger.info(f"\n🌐 Répartition par site:")
+        for site, count in sorted(stats['sites'].items(), key=lambda x: x[1], reverse=True):
+            logger.info(f"   • {site}: {count} pages")
 
-    sites_count = {}
-    oldest_crawl = None
-    newest_crawl = None
-
-    for url, data in cache.items():
-        if url == '_meta':
-            continue
-        parsed = urlparse(url)
-        domain = parsed.netloc
-        sites_count[domain] = sites_count.get(domain, 0) + 1
-
-        crawl_time = data.get('last_crawl', 0)
-        if crawl_time:
-            if oldest_crawl is None or crawl_time < oldest_crawl:
-                oldest_crawl = crawl_time
-            if newest_crawl is None or crawl_time > newest_crawl:
-                newest_crawl = crawl_time
-
-    logger.info(f"\n🌐 Répartition par domaine:")
-    for domain, count in sorted(sites_count.items(), key=lambda x: x[1], reverse=True):
-        logger.info(f"   • {domain}: {count} pages")
-
-    if oldest_crawl and newest_crawl:
-        oldest_date = datetime.fromtimestamp(oldest_crawl).strftime('%Y-%m-%d %H:%M:%S')
-        newest_date = datetime.fromtimestamp(newest_crawl).strftime('%Y-%m-%d %H:%M:%S')
+    if stats.get('oldest_crawl') and stats.get('newest_crawl'):
+        oldest_date = datetime.fromtimestamp(stats['oldest_crawl']).strftime('%Y-%m-%d %H:%M:%S')
+        newest_date = datetime.fromtimestamp(stats['newest_crawl']).strftime('%Y-%m-%d %H:%M:%S')
         logger.info(f"\n⏰ Premier crawl: {oldest_date}")
         logger.info(f"⏰ Dernier crawl: {newest_date}")
 
@@ -1181,96 +1069,13 @@ def show_cache_stats():
 
 
 def clear_cache():
-    if os.path.exists(config.CACHE_FILE):
-        try:
-            os.remove(config.CACHE_FILE)
-            logger.info("🗑️  Cache effacé avec succès")
-        except Exception as e:
-            logger.error(f"❌ Erreur lors de l'effacement du cache: {e}")
-    else:
-        logger.info("💾 Aucun cache à effacer")
+    logger.info("🗑️  Effacement du cache SQLite...")
+    try:
+        cache_db.clear_all()
+        logger.info("   ✓ Cache effacé avec succès")
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de l'effacement du cache: {e}")
 
-
-async def crawl_mediawiki_async(context: CrawlContext):
-    """
-    Point d'entrée pour crawler un wiki MediaWiki (Vikidia, Wikipedia, etc.)
-
-    Args:
-        context: CrawlContext contenant la config du site et les stats
-    """
-    from meilisearchcrawler.mediawiki_crawler import MediaWikiCrawler
-
-    # Initialiser le crawler MediaWiki
-    crawler = MediaWikiCrawler(context)
-
-    # Récupérer tous les documents
-    documents = await crawler.crawl()
-
-    if not documents:
-        logger.warning("⚠️  Aucun document à indexer")
-        return
-
-    # Traitement final : génération des embeddings et indexation
-    logger.info(f"⚙️  Finalisation et indexation de {len(documents)} documents...")
-
-    # Génération des embeddings si activé
-    if use_embeddings:
-        logger.info(f"   -> Génération de {len(documents)} embeddings via Gemini...")
-        logger.info(f"      (par lots de {config.GEMINI_EMBEDDING_BATCH_SIZE})")
-
-        all_embeddings = []
-        texts_to_embed = [
-            f"{doc.get('title', '')}\n{doc.get('content', '')}".strip()
-            for doc in documents
-        ]
-
-        # Traiter par batches pour éviter les timeouts
-        total_batches = (
-                                    len(texts_to_embed) + config.GEMINI_EMBEDDING_BATCH_SIZE - 1) // config.GEMINI_EMBEDDING_BATCH_SIZE
-
-        for i in range(0, len(texts_to_embed), config.GEMINI_EMBEDDING_BATCH_SIZE):
-            batch_num = i // config.GEMINI_EMBEDDING_BATCH_SIZE + 1
-            batch_texts = texts_to_embed[i:i + config.GEMINI_EMBEDDING_BATCH_SIZE]
-
-            logger.info(f"      Batch {batch_num}/{total_batches} ({len(batch_texts)} embeddings)...")
-
-            batch_embeddings = get_embeddings_batch(batch_texts)
-
-            if batch_embeddings:
-                all_embeddings.extend(batch_embeddings)
-            else:
-                # Si un batch échoue, ajouter des None pour garder la correspondance
-                logger.warning(f"      ⚠️ Échec du batch {batch_num}, documents indexés sans embeddings")
-                all_embeddings.extend([None] * len(batch_texts))
-
-        # Ajouter les embeddings aux documents
-        if len(all_embeddings) == len(documents):
-            embedded_count = 0
-            for doc, embedding in zip(documents, all_embeddings):
-                if embedding:
-                    doc["_vectors"] = {"default": embedding}
-                    embedded_count += 1
-
-            logger.info(f"   ✓ {embedded_count}/{len(documents)} documents avec embeddings")
-        else:
-            logger.error("❌ Taille des embeddings ne correspond pas, indexation sans embeddings")
-
-    # Indexation par lots dans MeiliSearch
-    logger.info(f"📦 Indexation dans MeiliSearch par lots de {config.BATCH_SIZE}...")
-
-    total_indexed = 0
-    for i in range(0, len(documents), config.BATCH_SIZE):
-        batch_docs = documents[i:i + config.BATCH_SIZE]
-
-        try:
-            index.add_documents(batch_docs)
-            total_indexed += len(batch_docs)
-            logger.debug(f"   ✓ Batch {i // config.BATCH_SIZE + 1}: {len(batch_docs)} documents indexés")
-        except Exception as e:
-            logger.error(f"❌ Erreur indexation batch {i // config.BATCH_SIZE + 1}: {e}")
-            await context.stats.increment('errors', len(batch_docs))
-
-    logger.info(f"✅ {total_indexed} documents indexés avec succès")
 
 async def main_async():
     args = parse_arguments()
@@ -1286,7 +1091,8 @@ async def main_async():
                 logger.error(f"❌ Erreur de configuration de l'API Gemini: {e}")
                 use_embeddings = False
         else:
-            logger.warning("⚠️  L'option --embeddings est activée mais GEMINI_API_KEY n'est pas définie. Embeddings désactivés.")
+            logger.warning(
+                "⚠️  L'option --embeddings est activée mais GEMINI_API_KEY n'est pas définie. Embeddings désactivés.")
 
     if args.verbose:
         logger.setLevel(logging.DEBUG)
@@ -1298,10 +1104,6 @@ async def main_async():
     if args.clear_cache:
         clear_cache()
 
-    logger.info("⚙️  Vérification de l'intégrité du cache...")
-    load_cache()
-
-    # Mettre à jour les settings de l'index en fonction de l'utilisation des embeddings
     update_meilisearch_settings(index, with_embeddings=use_embeddings)
 
     if args.workers:
@@ -1327,6 +1129,7 @@ async def main_async():
         logger.info(f"📋 {len(sites_to_crawl)} site(s) à crawler")
         logger.info(f"🔄 Mode: {'FORCE RECRAWL' if args.force else 'INCREMENTAL'}")
         logger.info(f"⚡ Workers: {config.CONCURRENT_REQUESTS} requêtes parallèles")
+        logger.info(f"📦 Indexation: par lots de {config.INDEXING_BATCH_SIZE} documents")
         if use_embeddings:
             logger.info(f"✨ Embeddings: Activés (modèle: {config.EMBEDDING_MODEL})")
         logger.info(f"{'=' * 60}\n")
@@ -1338,9 +1141,8 @@ async def main_async():
             logger.info(f"    Type: {site.get('type', 'html').upper()}")
             logger.info(f"{'=' * 60}")
 
-            cache = load_cache()
-            context = CrawlContext(site, args.force, cache)
-            start_crawl_session(context.cache, site['name'], urlparse(site['crawl']).netloc)
+            context = CrawlContext(site, args.force)
+            start_crawl_session(site['name'], urlparse(site['crawl']).netloc)
 
             completed_successfully = False
             try:
@@ -1360,8 +1162,7 @@ async def main_async():
             except Exception as e:
                 logger.error(f"❌ Erreur critique lors du crawl de {site['name']}: {e}", exc_info=args.verbose)
             finally:
-                complete_crawl_session(context.cache, site['name'], completed=completed_successfully)
-                save_cache(context.cache)
+                complete_crawl_session(site['name'], completed=completed_successfully)
                 context.stats.log_summary()
                 global_status.finish_site(context.stats)
 

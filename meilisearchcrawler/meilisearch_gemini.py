@@ -1,6 +1,7 @@
 """
 Module pour générer et ajouter des embeddings Gemini aux documents MeiliSearch.
 Ce script peut être exécuté de manière autonome pour traiter les documents existants.
+VERSION PROGRESSIVE OPTIMISÉE - Indexation immédiate pour libérer la mémoire.
 """
 
 import os
@@ -95,8 +96,18 @@ class MeiliSearchGemini:
             gemini_logger.error(f"❌ Erreur lors de la vérification: {e}")
             return False
 
-    def process_missing_embeddings(self, index_name: str, batch_size: int = 50):
-        """Trouve les documents sans embeddings, les génère et met à jour l'index."""
+    def process_missing_embeddings(self, index_name: str,
+                                   batch_size: int = 50,
+                                   gemini_batch_size: int = 100):
+        """
+        Trouve les documents sans embeddings, les génère et met à jour l'index.
+        VERSION PROGRESSIVE: indexe immédiatement après génération des embeddings.
+
+        Args:
+            index_name: Nom de l'index MeiliSearch
+            batch_size: Nombre de documents à récupérer de MeiliSearch par requête
+            gemini_batch_size: Nombre d'embeddings à générer par requête Gemini
+        """
         # Vérifier d'abord que les embedders sont configurés
         if not self.check_embedder_config(index_name):
             print("\n❌ Configuration incomplète. Arrêt du processus.")
@@ -117,8 +128,10 @@ class MeiliSearchGemini:
             return
 
         print(f"📊 Trouvé: {total_missing} documents sans embeddings")
-        print(f"⚙️  Batch size: {batch_size} documents")
-        print(f"🔄 Estimation: ~{(total_missing // batch_size) + 1} requêtes API Gemini\n")
+        print(f"⚙️  Batch MeiliSearch: {batch_size} documents")
+        print(f"⚙️  Batch Gemini: {gemini_batch_size} embeddings")
+        print(f"🔄 Estimation: ~{(total_missing // gemini_batch_size) + 1} requêtes API Gemini")
+        print(f"📦 Mode: Indexation progressive (mémoire optimisée)\n")
 
         with tqdm(total=total_missing, desc="📝 Génération", unit="doc", file=sys.stdout) as pbar:
             processed_docs_count = 0
@@ -127,6 +140,7 @@ class MeiliSearchGemini:
 
             while processed_docs_count < total_missing and not quota_exceeded:
                 try:
+                    # Récupérer un batch de documents sans embeddings
                     docs_to_process = index.get_documents({
                         'filter': '_vectors.default NOT EXISTS',
                         'limit': batch_size,
@@ -140,9 +154,9 @@ class MeiliSearchGemini:
                 if not docs_to_process:
                     break  # Terminé
 
-                # Préparer les textes pour l'embedding
-                texts_to_embed = []
-                doc_ids = []
+                # Préparer les textes pour l'embedding (buffer temporaire)
+                texts_buffer = []
+                doc_ids_buffer = []
 
                 for doc in docs_to_process:
                     title = getattr(doc, 'title', '')
@@ -150,45 +164,63 @@ class MeiliSearchGemini:
                     text = f"{title}\n{content}".strip()
 
                     if text:  # Ne traiter que les docs avec du contenu
-                        texts_to_embed.append(text)
-                        doc_ids.append(doc.id)
+                        texts_buffer.append(text)
+                        doc_ids_buffer.append(doc.id)
 
-                if not texts_to_embed:
+                if not texts_buffer:
                     processed_docs_count += len(docs_to_process)
                     pbar.update(len(docs_to_process))
                     continue
 
-                # Générer les embeddings
-                try:
-                    embeddings = self.get_embeddings_batch(texts_to_embed)
-                except QuotaExceededError:
-                    print("\n🛑 Quota Gemini dépassé. Arrêt du processus.")
-                    quota_exceeded = True
-                    break
+                # INDEXATION PROGRESSIVE: traiter les textes par sous-batches Gemini
+                # et indexer immédiatement après chaque génération
+                for i in range(0, len(texts_buffer), gemini_batch_size):
+                    sub_texts = texts_buffer[i:i + gemini_batch_size]
+                    sub_doc_ids = doc_ids_buffer[i:i + gemini_batch_size]
 
-                # Préparer les mises à jour
-                docs_to_update = []
-                for doc_id, embedding in zip(doc_ids, embeddings):
-                    if embedding and len(embedding) == 768:
-                        docs_to_update.append({
-                            'id': doc_id,
-                            '_vectors': {'default': embedding}
-                        })
-
-                # Mettre à jour MeiliSearch
-                if docs_to_update:
+                    # Générer les embeddings pour ce sous-batch
                     try:
-                        task = index.update_documents(docs_to_update)
-                        # Attendre que la tâche se termine
-                        self.client.wait_for_task(task.task_uid, timeout_in_ms=30000)
-                        successful_updates += len(docs_to_update)
-                    except Exception as e:
-                        print(f"\n❌ ERREUR: Mise à jour MeiliSearch: {e}")
+                        embeddings = self.get_embeddings_batch(sub_texts)
+                    except QuotaExceededError:
+                        print("\n🛑 Quota Gemini dépassé. Arrêt du processus.")
+                        quota_exceeded = True
+                        break
+
+                    # Préparer et indexer IMMÉDIATEMENT (ne pas stocker en mémoire)
+                    docs_to_update = []
+                    for doc_id, embedding in zip(sub_doc_ids, embeddings):
+                        if embedding and len(embedding) == 768:
+                            docs_to_update.append({
+                                'id': doc_id,
+                                '_vectors': {'default': embedding}
+                            })
+
+                    # Indexer ce sous-batch immédiatement
+                    if docs_to_update:
+                        try:
+                            task = index.update_documents(docs_to_update)
+                            # Attendre que la tâche se termine
+                            self.client.wait_for_task(task.task_uid, timeout_in_ms=30000)
+                            successful_updates += len(docs_to_update)
+
+                            # Libérer la mémoire explicitement
+                            del docs_to_update
+                            del embeddings
+
+                        except Exception as e:
+                            print(f"\n❌ ERREUR: Mise à jour MeiliSearch: {e}")
+
+                    # Petit délai pour éviter de saturer l'API
+                    time.sleep(0.3)
+
+                # Libérer les buffers après traitement complet du batch
+                del texts_buffer
+                del doc_ids_buffer
 
                 processed_docs_count += len(docs_to_process)
                 pbar.update(len(docs_to_process))
 
-                # Petit délai pour éviter de saturer l'API
+                # Petit délai entre les batches MeiliSearch
                 time.sleep(0.5)
 
         # Résumé
@@ -203,8 +235,51 @@ class MeiliSearchGemini:
             print(f"⚠️  Échecs: {processed_docs_count - successful_updates}")
         print("="*60)
 
+    def count_documents_stats(self, index_name: str):
+        """Affiche des statistiques sur les documents avec/sans embeddings."""
+        try:
+            index = self.client.index(index_name)
+
+            # Total de documents
+            stats = index.get_stats()
+            total_docs = stats.get('numberOfDocuments', 0)
+
+            # Documents sans embeddings
+            try:
+                search_res = index.search('', {'filter': '_vectors.default NOT EXISTS', 'limit': 0})
+                docs_without = search_res.get('estimatedTotalHits', 0)
+            except:
+                docs_without = "N/A"
+
+            # Documents avec embeddings
+            docs_with = total_docs - docs_without if isinstance(docs_without, int) else "N/A"
+
+            print("\n" + "="*60)
+            print("📊 STATISTIQUES DES EMBEDDINGS")
+            print("="*60)
+            print(f"📄 Total de documents: {total_docs}")
+            print(f"✅ Avec embeddings: {docs_with}")
+            print(f"❌ Sans embeddings: {docs_without}")
+            if isinstance(docs_with, int) and total_docs > 0:
+                percentage = (docs_with / total_docs) * 100
+                print(f"📈 Taux de couverture: {percentage:.1f}%")
+            print("="*60 + "\n")
+
+        except Exception as e:
+            print(f"❌ Erreur lors du calcul des statistiques: {e}")
+
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Ajouter des embeddings Gemini aux documents MeiliSearch')
+    parser.add_argument('--stats', action='store_true', help='Afficher uniquement les statistiques')
+    parser.add_argument('--batch-size', type=int, default=50,
+                       help='Nombre de documents à récupérer par batch (défaut: 50)')
+    parser.add_argument('--gemini-batch-size', type=int, default=100,
+                       help='Nombre d\'embeddings à générer par requête Gemini (défaut: 100)')
+    args = parser.parse_args()
+
     MEILI_URL = os.getenv("MEILI_URL")
     MEILI_KEY = os.getenv("MEILI_KEY")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -220,11 +295,24 @@ if __name__ == "__main__":
             meili_key=MEILI_KEY,
             gemini_api_key=GEMINI_API_KEY
         )
-        meili_gemini.process_missing_embeddings(INDEX_NAME)
+
+        if args.stats:
+            # Afficher uniquement les statistiques
+            meili_gemini.count_documents_stats(INDEX_NAME)
+        else:
+            # Traiter les documents manquants
+            meili_gemini.process_missing_embeddings(
+                INDEX_NAME,
+                batch_size=args.batch_size,
+                gemini_batch_size=args.gemini_batch_size
+            )
+
     except KeyboardInterrupt:
         print("\n\n⚠️  Interruption utilisateur (Ctrl+C)")
         print("💡 Vous pouvez relancer le script pour continuer où il s'est arrêté")
         sys.exit(0)
     except Exception as e:
         print(f"\n❌ Une erreur inattendue est survenue: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)

@@ -13,3 +13,4 @@ crawler.log
 /data/status.json
 /data/crawler.pid
 /data/crawl_history.json
+/data/crawler_cache.db
