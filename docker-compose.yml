@@ -1,0 +1,123 @@
+services:
+  # Meilisearch - Search engine
+  meilisearch:
+    image: getmeili/meilisearch:v1.5
+    container_name: kidsearch-meilisearch
+    restart: unless-stopped
+    ports:
+      - "7700:7700"
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_KEY:-masterKey}
+      MEILI_ENV: ${MEILI_ENV:-production}
+      MEILI_NO_ANALYTICS: true
+    volumes:
+      - meilisearch-data:/meili_data
+    networks:
+      - kidsearch-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # KidSearch Dashboard & API (All-in-one)
+  kidsearch-all:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kidsearch-all
+    restart: unless-stopped
+    ports:
+      - "8501:8501"  # Dashboard
+      - "8080:8080"  # API
+    environment:
+      SERVICE: all
+      DASHBOARD_PORT: 8501
+      DASHBOARD_HOST: 0.0.0.0
+      API_PORT: 8080
+      API_HOST: 0.0.0.0
+      API_WORKERS: 4
+      API_ENABLED: "true"
+      MEILI_URL: http://meilisearch:7700
+      MEILI_KEY: ${MEILI_KEY:-masterKey}
+      INDEX_NAME: ${INDEX_NAME:-kidsearch}
+      RERANKING_ENABLED: ${RERANKING_ENABLED:-false}
+      RERANKER_MODEL: ${RERANKER_MODEL:-Snowflake/snowflake-arctic-embed-m}
+      MEILISEARCH_WEIGHT: ${MEILISEARCH_WEIGHT:-0.7}
+      CSE_WEIGHT: ${CSE_WEIGHT:-0.3}
+      GOOGLE_CSE_API_KEY: ${GOOGLE_CSE_API_KEY:-}
+      GOOGLE_CSE_ID: ${GOOGLE_CSE_ID:-}
+      GOOGLE_GEMINI_API_KEY: ${GOOGLE_GEMINI_API_KEY:-}
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    networks:
+      - kidsearch-network
+    depends_on:
+      - meilisearch
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Alternative: Dashboard only
+  # Uncomment to run Dashboard in a separate container
+  # kidsearch-dashboard:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: kidsearch-dashboard
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8501:8501"
+  #   environment:
+  #     SERVICE: dashboard
+  #     DASHBOARD_PORT: 8501
+  #     DASHBOARD_HOST: 0.0.0.0
+  #     MEILI_URL: http://meilisearch:7700
+  #     MEILI_KEY: ${MEILI_KEY:-masterKey}
+  #     INDEX_NAME: ${INDEX_NAME:-kidsearch}
+  #   volumes:
+  #     - ./data:/app/data
+  #     - ./config:/app/config
+  #   networks:
+  #     - kidsearch-network
+  #   depends_on:
+  #     - meilisearch
+
+  # Alternative: API only
+  # Uncomment to run API in a separate container
+  # kidsearch-api:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: kidsearch-api
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8080:8080"
+  #   environment:
+  #     SERVICE: api
+  #     API_PORT: 8080
+  #     API_HOST: 0.0.0.0
+  #     API_WORKERS: 4
+  #     API_ENABLED: "true"
+  #     MEILI_URL: http://meilisearch:7700
+  #     MEILI_KEY: ${MEILI_KEY:-masterKey}
+  #     INDEX_NAME: ${INDEX_NAME:-kidsearch}
+  #     RERANKING_ENABLED: ${RERANKING_ENABLED:-false}
+  #   volumes:
+  #     - ./data:/app/data
+  #   networks:
+  #     - kidsearch-network
+  #   depends_on:
+  #     - meilisearch
+
+volumes:
+  meilisearch-data:
+    driver: local
+
+networks:
+  kidsearch-network:
+    driver: bridge

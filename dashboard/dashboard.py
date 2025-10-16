@@ -73,10 +73,35 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Métriques de la barre latérale
+    # Section CRAWLER
+    st.markdown(f"### 🕸️ {t('section_crawler')}")
+
+    # Métriques Crawler
     running = is_crawler_running()
     st.metric(t('crawler_status'), f"🟢 {t('active')}" if running else f"🔴 {t('stopped')}")
 
+    cache_stats = load_cache_stats()
+    if cache_stats:
+        st.metric(t('cached_urls'), f"{cache_stats['total_urls']:,}")
+
+    st.markdown(t('crawler_pages_info'))
+
+    st.markdown("---")
+
+    # Section API
+    st.markdown(f"### 🚀 {t('section_api')}")
+
+    # Vérifier si l'API est activée
+    api_enabled = os.getenv("API_ENABLED", "false").lower() == "true"
+    if api_enabled:
+        api_host = os.getenv("API_HOST", "0.0.0.0")
+        api_port = os.getenv("API_PORT", "8080")
+        st.metric(t('api_status'), f"🟢 {t('active')}")
+        st.caption(f"http://{api_host}:{api_port}")
+    else:
+        st.metric(t('api_status'), f"🔴 {t('disabled')}")
+
+    # Métriques Meilisearch
     meili_client = get_meili_client()
     if meili_client:
         try:
@@ -86,9 +111,7 @@ with st.sidebar:
         except Exception:
             st.metric(t('meilisearch_docs'), "N/A")
 
-    cache_stats = load_cache_stats()
-    if cache_stats:
-        st.metric(t('cached_urls'), f"{cache_stats['total_urls']:,}")
+    st.markdown(t('api_pages_info'))
 
     st.markdown("---")
 
