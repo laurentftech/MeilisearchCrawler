@@ -12,6 +12,7 @@ streamlit
 plotly
 google-genai
 langdetect
+certifi
 
 # API Backend Dependencies
 fastapi>=0.109.0

@@ -8,11 +8,13 @@ from urllib.parse import urljoin
 import logging
 from datetime import datetime
 import time
+import ssl
 from google import genai
 import hashlib
 import os
 
 # Imports pour la migration vers SQLite
+import certifi
 from meilisearchcrawler.crawler import should_skip_page, update_cache, config
 
 logger = logging.getLogger(__name__)
@@ -387,10 +389,12 @@ class MediaWikiCrawler:
         documents_buffer = []
 
         headers = {
-            'User-Agent': 'KidSearch-Crawler/2.0 (Educational; Contact: your-email@example.com)'
+            'User-Agent': config.USER_AGENT
         }
 
-        async with aiohttp.ClientSession(headers=headers) as session:
+        # Correction: Utiliser le contexte SSL sécurisé
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        async with aiohttp.ClientSession(headers=headers, connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
             # 1. Récupérer tous les IDs de pages
             page_ids = await self.get_all_page_ids(session)
 
@@ -513,10 +517,12 @@ class MediaWikiCrawler:
         all_documents = []
 
         headers = {
-            'User-Agent': 'KidSearch-Crawler/2.0 (Educational; Contact: your-email@example.com)'
+            'User-Agent': config.USER_AGENT
         }
 
-        async with aiohttp.ClientSession(headers=headers) as session:
+        # Correction: Utiliser le contexte SSL sécurisé
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        async with aiohttp.ClientSession(headers=headers, connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
             page_ids = await self.get_all_page_ids(session)
 
             if not page_ids:

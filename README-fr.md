@@ -135,6 +135,7 @@ Le fichier `config/sites.yml` vous permet de définir une liste de sites à craw
 - `type`: (String) Le type de contenu. Peut être `html`, `json`, ou `mediawiki`.
 - `max_pages`: (Integer) Le nombre maximum de pages à crawler. Mettre `0` ou omettre pour ne pas avoir de limite.
 - `depth`: (Integer) Pour les sites `html`, la profondeur maximale pour suivre les liens.
+- `delay`: (Float, optionnel) Un délai spécifique en secondes entre les requêtes pour ce site, ignorant le délai par défaut. Utile pour les serveurs sensibles.
 - `selector`: (String, optionnel) Pour les sites `html`, un sélecteur CSS spécifique (ex: `.main-article`) pour cibler le contenu principal.
 - `lang`: (String, optionnel) Pour les sources `json`, spécifie la langue du contenu (ex: "fr").
 - `exclude`: (Liste de chaînes) Une liste de motifs d'URL à ignorer complètement.

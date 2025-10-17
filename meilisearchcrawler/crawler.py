@@ -18,6 +18,7 @@ from datetime import datetime
 import sys
 from dotenv import load_dotenv
 from typing import Dict, List, Optional, Set, Tuple
+import ssl
 import argparse
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from tqdm.asyncio import tqdm
@@ -25,6 +26,7 @@ from tqdm import tqdm as tqdm_sync
 from google import genai as gemini
 import trafilatura
 from meilisearchcrawler.cache_db import CacheDB
+import certifi
 import signal
 
 
@@ -59,12 +61,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- SSL Context Patch for urllib ---
+# RobotFileParser uses urllib, which doesn't automatically use certifi.
+# This patch ensures all urllib requests use our secure SSL context.
+try:
+    import urllib.request
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    https_handler = urllib.request.HTTPSHandler(context=ssl_context)
+    opener = urllib.request.build_opener(https_handler)
+    urllib.request.install_opener(opener)
+    logger.info("✓ Contexte SSL patché pour urllib (robots.txt)")
+except Exception as e:
+    logger.warning(f"⚠️  Impossible de patcher le contexte SSL pour urllib: {e}")
 
 # ---------------------------
 # Configuration
 # ---------------------------
 class Config:
-    USER_AGENT = os.getenv('USER_AGENT', 'Mozilla/5.0 (compatible; KidSearch-Crawler/2.0)')
+    USER_AGENT = os.getenv('USER_AGENT', 'KidSearch-Crawler/2.0 (+https://github.com/laurentftech/MeilisearchCrawler)')
     MEILI_URL = os.getenv("MEILI_URL")
     MEILI_KEY = os.getenv("MEILI_KEY")
     INDEX_NAME = os.getenv("INDEX_NAME", "kidsearch")
@@ -634,7 +648,11 @@ class CrawlContext:
         self.force_recrawl = force_recrawl
         self.processed_hashes: Set[str] = set()
         self.stats = CrawlStats(site['name'])
-        self.rate_limiter = RateLimiter(get_crawl_delay(site["crawl"]))
+        # Utilise le délai personnalisé du site s'il est défini, sinon le délai automatique
+        custom_delay = site.get('delay')
+        if custom_delay is not None:
+            logger.info(f"   -> Délai personnalisé appliqué: {custom_delay}s")
+        self.rate_limiter = RateLimiter(custom_delay if custom_delay is not None else get_crawl_delay(site["crawl"]))
         self.exclude_patterns = config.GLOBAL_EXCLUDE_PATTERNS + site.get("exclude", [])
         self.no_index_patterns = site.get("no_index", [])
         self.max_depth = site.get("depth", 3)
@@ -809,7 +827,9 @@ async def crawl_site_html_async(context: CrawlContext):
     in_progress: Set[str] = set()
 
     timeout = ClientTimeout(total=config.TIMEOUT)
-    connector = TCPConnector(limit=config.MAX_CONNECTIONS, limit_per_host=config.CONCURRENT_REQUESTS)
+    # Création d'un contexte SSL sécurisé qui utilise les certificats de `certifi`
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    connector = TCPConnector(limit=config.MAX_CONNECTIONS, limit_per_host=config.CONCURRENT_REQUESTS, ssl=ssl_context)
 
     headers = {
         'User-Agent': config.USER_AGENT,
@@ -931,14 +951,12 @@ async def crawl_json_api_async(context: CrawlContext):
         **context.site.get('headers', {})
     }
 
-    robot_parser = get_robot_parser(base_url)
-    if robot_parser and not robot_parser.can_fetch(config.USER_AGENT, base_url):
-        logger.warning(f"🚫 Accès à {base_url} interdit par robots.txt")
-        await context.stats.increment('errors')
-        return
+    await context.rate_limiter.wait() # Appliquer le délai avant la première requête
 
     try:
-        async with aiohttp.ClientSession(headers=headers, timeout=ClientTimeout(total=config.TIMEOUT)) as session:
+        # Correction: Utiliser le contexte SSL sécurisé
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        async with aiohttp.ClientSession(headers=headers, timeout=ClientTimeout(total=config.TIMEOUT), connector=TCPConnector(ssl=ssl_context)) as session:
             async with session.get(base_url) as response:
                 response.raise_for_status()
                 data = await response.json()
