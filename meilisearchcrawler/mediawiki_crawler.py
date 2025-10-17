@@ -232,6 +232,42 @@ class MediaWikiCrawler:
         if not content:
             return ""
 
+        # Supprimer les templates wiki imbriqués {{...}}
+        # Utiliser une boucle pour gérer les templates imbriqués
+        max_iterations = 10
+        for _ in range(max_iterations):
+            before = content
+            # Supprimer les templates les plus internes d'abord
+            content = re.sub(r'\{\{[^{}]*\}\}', '', content)
+            if before == content:  # Plus de changements
+                break
+
+        # Supprimer les tables {| ... |}
+        for _ in range(3):
+            before = content
+            content = re.sub(r'\{\|[^{}]*\|\}', '', content, flags=re.DOTALL)
+            if before == content:
+                break
+
+        # Supprimer les balises HTML
+        content = re.sub(r'<[^>]+>', '', content)
+
+        # Supprimer les références <ref>...</ref>
+        content = re.sub(r'<ref[^>]*>.*?</ref>', '', content, flags=re.DOTALL)
+        content = re.sub(r'<ref[^>]*/?>', '', content)
+
+        # Supprimer les liens wiki [[Titre|texte]] -> texte
+        content = re.sub(r'\[\[(?:[^\|\]]+\|)?([^\]]+)\]\]', r'\1', content)
+
+        # Supprimer les catégories [[Catégorie:...]]
+        content = re.sub(r'\[\[Catégorie:[^\]]+\]\]', '', content, flags=re.IGNORECASE)
+
+        # Supprimer les fichiers [[Fichier:...]] ou [[File:...]]
+        content = re.sub(r'\[\[(Fichier|File|Image):[^\]]+\]\]', '', content, flags=re.IGNORECASE)
+
+        # Supprimer les caractères wiki restants
+        content = re.sub(r"'{2,}", '', content)  # Gras/italique ''text'' ou '''text'''
+
         # Supprimer les sections de fin (références, liens externes, etc.)
         patterns = [
             r'==\s*Références?\s*==',
@@ -250,9 +286,14 @@ class MediaWikiCrawler:
         if min_pos < len(content) and min_pos > 500:
             content = content[:min_pos]
 
+        # Supprimer les titres de sections == ... ==
+        content = re.sub(r'={2,}[^=]+=={2,}', '', content)
+
+        # Nettoyer les espaces multiples et retours à la ligne
         content = re.sub(r'\s+', ' ', content)
         content = content.strip()
 
+        # Limiter la longueur
         if len(content) > 3000:
             content = content[:3000]
 

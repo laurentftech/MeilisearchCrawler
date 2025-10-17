@@ -25,6 +25,7 @@ from tqdm import tqdm as tqdm_sync
 from google import genai as gemini
 import trafilatura
 from meilisearchcrawler.cache_db import CacheDB
+import signal
 
 
 # ---------------------------
@@ -80,6 +81,11 @@ class Config:
     EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", 768))
     GEMINI_EMBEDDING_BATCH_SIZE = int(os.getenv("GEMINI_EMBEDDING_BATCH_SIZE", 100))
 
+    # Protections pour environnements à ressources limitées (NAS)
+    MAX_CRAWL_DURATION = int(os.getenv('MAX_CRAWL_DURATION', 3600))  # 1 heure par défaut
+    MAX_QUEUE_SIZE = int(os.getenv('MAX_QUEUE_SIZE', 50000))  # Limite de la file d'attente
+    MAX_WORKERS = int(os.getenv('MAX_WORKERS', 20))  # Maximum absolu de workers
+
     GLOBAL_EXCLUDE_PATTERNS = [
         '/login', '/logout', '/signin', '/signup', '/register',
         '/cart', '/checkout', '/account', '/share', '/print', '/cdn-cgi/',
@@ -95,6 +101,26 @@ if not config.MEILI_URL or not config.MEILI_KEY:
 
 gemini_client = None
 use_embeddings = False
+
+# ---------------------------
+# Gestionnaire d'arrêt gracieux
+# ---------------------------
+class ShutdownHandler:
+    """Gère l'arrêt gracieux du crawler en réponse aux signaux système"""
+    def __init__(self):
+        self.shutdown_requested = False
+        signal.signal(signal.SIGINT, self._handle_signal)
+        signal.signal(signal.SIGTERM, self._handle_signal)
+
+    def _handle_signal(self, signum, frame):
+        sig_name = 'SIGINT' if signum == signal.SIGINT else 'SIGTERM'
+        logger.warning(f"\n⚠️  Signal {sig_name} reçu - arrêt gracieux en cours...")
+        self.shutdown_requested = True
+
+    def should_stop(self) -> bool:
+        return self.shutdown_requested
+
+shutdown_handler = ShutdownHandler()
 
 # ---------------------------
 # MeiliSearch & Cache Setup
@@ -763,6 +789,11 @@ async def crawl_site_html_async(context: CrawlContext):
         f"   Paramètres: max={max_pages}, depth={context.max_depth}, delay={context.rate_limiter.delay:.2f}s, workers={config.CONCURRENT_REQUESTS}")
     logger.info(f"   📦 Indexation progressive par lots de {config.INDEXING_BATCH_SIZE}")
 
+    # Protections contre boucles infinies et saturation ressources
+    crawl_start_time = time.time()
+    logger.info(f"   ⏱️  Timeout maximum: {config.MAX_CRAWL_DURATION}s ({config.MAX_CRAWL_DURATION/60:.1f} min)")
+    logger.info(f"   🧠 Limite file d'attente: {config.MAX_QUEUE_SIZE} URLs")
+
     documents_buffer = []
 
     session_data = cache_db.get_session(context.site['name'])
@@ -795,6 +826,23 @@ async def crawl_site_html_async(context: CrawlContext):
 
     async with ClientSession(timeout=timeout, connector=connector, headers=headers) as session:
         while to_visit or in_progress:
+            # Protection 1: Vérification timeout global
+            elapsed_time = time.time() - crawl_start_time
+            if elapsed_time > config.MAX_CRAWL_DURATION:
+                logger.warning(f"⏱️  Timeout atteint ({elapsed_time/60:.1f} min) - arrêt du crawl")
+                break
+
+            # Protection 2: Vérification arrêt gracieux (SIGTERM/SIGINT)
+            if shutdown_handler.should_stop():
+                logger.warning("⚠️  Arrêt gracieux demandé - sauvegarde en cours...")
+                break
+
+            # Protection 3: Vérification limite mémoire (taille de la queue)
+            if len(to_visit) > config.MAX_QUEUE_SIZE:
+                logger.warning(f"🧠 Limite de queue atteinte ({len(to_visit)} URLs) - arrêt temporaire")
+                break
+
+            # Protection 4: Vérification max_pages
             if max_pages > 0 and context.stats.pages_visited >= max_pages:
                 break
             batch = []
@@ -1106,8 +1154,14 @@ async def main_async():
 
     update_meilisearch_settings(index, with_embeddings=use_embeddings)
 
+    # Validation et limitation du nombre de workers
     if args.workers:
-        config.CONCURRENT_REQUESTS = args.workers
+        if args.workers > config.MAX_WORKERS:
+            logger.warning(f"⚠️  Nombre de workers limité de {args.workers} à {config.MAX_WORKERS} (MAX_WORKERS)")
+            logger.warning(f"    Pour augmenter cette limite, définissez MAX_WORKERS dans .env")
+            config.CONCURRENT_REQUESTS = config.MAX_WORKERS
+        else:
+            config.CONCURRENT_REQUESTS = args.workers
 
     sites_to_crawl = sites
     if args.site:
