@@ -5,9 +5,16 @@ Handles search queries against local indexed content.
 
 import logging
 import hashlib
+import os
+import sys
+from pathlib import Path
 from typing import List, Optional
 import meilisearch
 from meilisearch.errors import MeilisearchApiError
+
+# Ajouter le répertoire racine au path pour les imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+from meilisearchcrawler.embeddings import create_embedding_provider, EmbeddingProvider
 
 from ..models import SearchResult, SearchSource, ImageResult
 
@@ -33,6 +40,28 @@ class MeilisearchClient:
         self.index_name = index_name
         self.client = None
         self.index = None
+
+        # Initialiser le provider d'embeddings pour les requêtes
+        # (utilisé uniquement si EMBEDDING_PROVIDER != gemini)
+        self.embedding_provider = None
+        self.use_vector_search = False
+
+        embedding_provider = os.getenv("EMBEDDING_PROVIDER", "none").lower()
+        if embedding_provider == "snowflake":
+            try:
+                self.embedding_provider = create_embedding_provider(embedding_provider)
+                self.use_vector_search = self.embedding_provider.get_embedding_dim() > 0
+                if self.use_vector_search:
+                    logger.info(f"✓ Vector search enabled with Snowflake ({self.embedding_provider.get_embedding_dim()}D)")
+            except Exception as e:
+                logger.warning(f"Failed to initialize embedding provider for queries: {e}")
+                self.use_vector_search = False
+        elif embedding_provider == "gemini":
+            # Gemini utilise le REST embedder configuré dans MeiliSearch
+            logger.info("✓ Vector search enabled with Gemini (REST embedder)")
+            self.use_vector_search = True
+        else:
+            logger.info("Vector search disabled (no embedding provider)")
 
     def connect(self):
         """Connect to Meilisearch and get index."""
@@ -91,6 +120,23 @@ class MeilisearchClient:
             # Add language filter if specified
             if lang:
                 search_params["filter"] = f"lang = {lang}"
+
+            # Add vector search if enabled and provider is Snowflake
+            if self.use_vector_search and self.embedding_provider:
+                try:
+                    # Générer l'embedding de la requête avec Snowflake
+                    query_embeddings = self.embedding_provider.encode([query])
+                    if query_embeddings and len(query_embeddings) > 0:
+                        search_params["vector"] = query_embeddings[0]
+                        # Paramètre hybrid requis quand on utilise vector search
+                        search_params["hybrid"] = {
+                            "semanticRatio": 0.5,  # 50% sémantique, 50% texte
+                            "embedder": "default"
+                        }
+                        logger.debug(f"Added vector search for query: '{query}'")
+                except Exception as e:
+                    logger.warning(f"Failed to generate query embedding: {e}")
+                    # Continue without vector search
 
             # Execute search
             results = self.index.search(query, search_params)

@@ -4,7 +4,7 @@
 import aiohttp
 import asyncio
 from typing import Dict, List, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlencode
 import logging
 from datetime import datetime
 import time
@@ -13,9 +13,17 @@ from google import genai
 import hashlib
 import os
 
+# Import curl_cffi pour contourner Cloudflare
+try:
+    from curl_cffi import requests as curl_requests
+    CURL_CFFI_AVAILABLE = True
+except ImportError:
+    CURL_CFFI_AVAILABLE = False
+
 # Imports pour la migration vers SQLite
 import certifi
 from meilisearchcrawler.crawler import should_skip_page, update_cache, config
+from meilisearchcrawler.embeddings import create_embedding_provider, EmbeddingProvider
 
 logger = logging.getLogger(__name__)
 
@@ -30,22 +38,9 @@ class MediaWikiCrawler:
         self.namespaces = self.site_config.get('namespaces', [0])  # 0 = articles principaux
         self.batch_size = self.site_config.get('api_batch_size', 50)
 
-        # Initialiser le client Gemini si disponible
-        self.gemini_client = None
-        self.embedding_model = "text-embedding-004"
-
-        # Récupérer la clé Gemini depuis les variables d'environnement
-        gemini_api_key = os.getenv('GEMINI_API_KEY')
-
-        if gemini_api_key:
-            try:
-                self.gemini_client = genai.Client(api_key=gemini_api_key)
-                logger.info("✓ Client Gemini initialisé pour les embeddings")
-            except Exception as e:
-                logger.warning(f"⚠️  Impossible d'initialiser Gemini: {e}")
-                logger.warning("   Les documents seront indexés SANS embeddings")
-        else:
-            logger.warning("⚠️  GEMINI_API_KEY non trouvée - embeddings désactivés")
+        # Initialiser le provider d'embeddings
+        self.embedding_provider = create_embedding_provider()
+        self.embedding_dim = self.embedding_provider.get_embedding_dim()
 
     def _build_api_url(self) -> str:
         """Construit l'URL de l'API à partir de l'URL du wiki"""
@@ -55,10 +50,45 @@ class MediaWikiCrawler:
             return base_url.split('/wiki/')[0] + '/w/api.php'
         return base_url.rstrip('/') + '/w/api.php'
 
+    def _use_cloudflare_bypass(self) -> bool:
+        """Détermine si on doit utiliser curl_cffi pour contourner Cloudflare"""
+        # Utiliser curl_cffi si disponible ET si le site est Vikidia (protégé par Cloudflare)
+        if not CURL_CFFI_AVAILABLE:
+            return False
+        site_name = self.site_config.get('name', '').lower()
+        return 'vikidia' in site_name
+
+    async def _fetch_with_curl_cffi(self, url: str, params: dict) -> Optional[dict]:
+        """Fait une requête avec curl_cffi pour contourner Cloudflare (mode synchrone dans thread)"""
+        def _sync_request():
+            try:
+                response = curl_requests.get(
+                    url,
+                    params=params,
+                    impersonate='chrome120',  # Imite Chrome 120 au niveau TLS
+                    timeout=30
+                )
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    logger.error(f"❌ Erreur curl_cffi {response.status_code}: {response.text[:200]}")
+                    return None
+            except Exception as e:
+                logger.error(f"❌ Erreur curl_cffi: {e}")
+                return None
+
+        # Exécuter la requête synchrone dans un thread pool
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _sync_request)
+
     async def get_all_page_ids(self, session: aiohttp.ClientSession) -> List[int]:
         """Récupère tous les IDs de pages du wiki (SEULEMENT les articles du namespace spécifié)"""
         logger.info(f"📋 Récupération de la liste des articles depuis {self.api_url}")
         logger.info(f"   Namespace(s): {self.namespaces} (0 = articles principaux)")
+
+        use_cf_bypass = self._use_cloudflare_bypass()
+        if use_cf_bypass:
+            logger.info(f"   🔐 Protection Cloudflare détectée - utilisation de curl_cffi")
 
         all_page_ids = []
         continue_token = None
@@ -78,21 +108,28 @@ class MediaWikiCrawler:
 
             try:
                 await self.context.rate_limiter.wait()
-                async with session.get(self.api_url, params=params) as response:
-                    response.raise_for_status()
-                    data = await response.json()
 
-                    pages = data.get('query', {}).get('allpages', [])
-                    page_ids = [page['pageid'] for page in pages]
-                    all_page_ids.extend(page_ids)
-
-                    logger.info(f"   → {len(all_page_ids)} articles listés...")
-
-                    # Vérifier s'il y a plus de pages
-                    if 'continue' in data:
-                        continue_token = data['continue'].get('apcontinue')
-                    else:
+                # Utiliser curl_cffi pour Vikidia (Cloudflare), aiohttp pour les autres
+                if use_cf_bypass:
+                    data = await self._fetch_with_curl_cffi(self.api_url, params)
+                    if not data:
                         break
+                else:
+                    async with session.get(self.api_url, params=params) as response:
+                        response.raise_for_status()
+                        data = await response.json()
+
+                pages = data.get('query', {}).get('allpages', [])
+                page_ids = [page['pageid'] for page in pages]
+                all_page_ids.extend(page_ids)
+
+                logger.info(f"   → {len(all_page_ids)} articles listés...")
+
+                # Vérifier s'il y a plus de pages
+                if 'continue' in data:
+                    continue_token = data['continue'].get('apcontinue')
+                else:
+                    break
 
             except Exception as e:
                 logger.error(f"❌ Erreur lors de la récupération de la liste: {e}")
@@ -102,22 +139,8 @@ class MediaWikiCrawler:
         return all_page_ids
 
     def get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
-        """Génère des embeddings pour un lot de textes"""
-        if not self.gemini_client:
-            return [[] for _ in texts]
-
-        try:
-            result = self.gemini_client.models.embed_content(
-                model=self.embedding_model,
-                contents=texts
-            )
-            return [embedding.values for embedding in result.embeddings]
-        except Exception as e:
-            if "quota" in str(e).lower():
-                logger.error(f"🛑 Quota Gemini dépassé: {e}")
-            else:
-                logger.error(f"❌ Erreur API Gemini: {e}")
-            return [[] for _ in texts]
+        """Génère des embeddings pour un lot de textes via le provider configuré"""
+        return self.embedding_provider.encode(texts)
 
     async def fetch_pages_batch(self, session: aiohttp.ClientSession,
                                 page_ids: List[int]) -> List[Dict]:
@@ -138,71 +161,80 @@ class MediaWikiCrawler:
             'format': 'json'
         }
 
+        use_cf_bypass = self._use_cloudflare_bypass()
+
         try:
             await self.context.rate_limiter.wait()
-            async with session.get(self.api_url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                response.raise_for_status()
-                data = await response.json()
 
-                pages = data.get('query', {}).get('pages', {})
-                documents = []
+            # Utiliser curl_cffi pour Vikidia (Cloudflare), aiohttp pour les autres
+            if use_cf_bypass:
+                data = await self._fetch_with_curl_cffi(self.api_url, params)
+                if not data:
+                    return []
+            else:
+                async with session.get(self.api_url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                    response.raise_for_status()
+                    data = await response.json()
 
-                stats = {'total': len(pages), 'missing': 0, 'redirect': 0,
-                         'wrong_namespace': 0, 'unsafe': 0, 'stub': 0, 'ok': 0}
+            pages = data.get('query', {}).get('pages', {})
+            documents = []
 
-                for page_id, page_data in pages.items():
-                    if 'missing' in page_data:
-                        stats['missing'] += 1
-                        continue
-                    if 'redirect' in page_data:
-                        stats['redirect'] += 1
-                        continue
+            stats = {'total': len(pages), 'missing': 0, 'redirect': 0,
+                     'wrong_namespace': 0, 'unsafe': 0, 'stub': 0, 'ok': 0}
 
-                    title = page_data.get('title', '')
-                    content = page_data.get('extract') or \
-                              page_data.get('revisions', [{}])[0].get('*', '')
-                    url = page_data.get('fullurl', '')
+            for page_id, page_data in pages.items():
+                if 'missing' in page_data:
+                    stats['missing'] += 1
+                    continue
+                if 'redirect' in page_data:
+                    stats['redirect'] += 1
+                    continue
 
-                    namespace = page_data.get('ns', -1)
-                    if namespace not in self.namespaces:
-                        stats['wrong_namespace'] += 1
-                        continue
+                title = page_data.get('title', '')
+                content = page_data.get('extract') or \
+                          page_data.get('revisions', [{}])[0].get('*', '')
+                url = page_data.get('fullurl', '')
 
-                    if not self._is_safe_content(title, content):
-                        stats['unsafe'] += 1
-                        continue
+                namespace = page_data.get('ns', -1)
+                if namespace not in self.namespaces:
+                    stats['wrong_namespace'] += 1
+                    continue
 
-                    content = self._clean_content(content)
+                if not self._is_safe_content(title, content):
+                    stats['unsafe'] += 1
+                    continue
 
-                    if len(content.strip()) < 50:
-                        stats['stub'] += 1
-                        continue
+                content = self._clean_content(content)
 
-                    stats['ok'] += 1
-                    excerpt = self._create_excerpt(content)
+                if len(content.strip()) < 50:
+                    stats['stub'] += 1
+                    continue
 
-                    images = []
-                    if 'thumbnail' in page_data:
-                        images.append({
-                            'url': page_data['thumbnail']['source'],
-                            'alt': title,
-                            'description': title
-                        })
+                stats['ok'] += 1
+                excerpt = self._create_excerpt(content)
 
-                    documents.append({
-                        'page_id': int(page_id),
-                        'title': title,
-                        'content': content,
-                        'excerpt': excerpt,
-                        'url': url,
-                        'images': images
+                images = []
+                if 'thumbnail' in page_data:
+                    images.append({
+                        'url': page_data['thumbnail']['source'],
+                        'alt': title,
+                        'description': title
                     })
 
-                if (stats['stub'] > 10 or stats['unsafe'] > 0) and len(pages) == self.batch_size:
-                    logger.info(
-                        f"   📊 Batch: {stats['ok']}/{stats['total']} retenus | Stubs/vides: {stats['stub']} | Non sûrs: {stats['unsafe']}")
+                documents.append({
+                    'page_id': int(page_id),
+                    'title': title,
+                    'content': content,
+                    'excerpt': excerpt,
+                    'url': url,
+                    'images': images
+                })
 
-                return documents
+            if (stats['stub'] > 10 or stats['unsafe'] > 0) and len(pages) == self.batch_size:
+                logger.info(
+                    f"   📊 Batch: {stats['ok']}/{stats['total']} retenus | Stubs/vides: {stats['stub']} | Non sûrs: {stats['unsafe']}")
+
+            return documents
 
         except asyncio.TimeoutError:
             logger.warning(f"⏱️ Timeout pour le batch de {len(page_ids)} pages")
@@ -330,7 +362,7 @@ class MediaWikiCrawler:
         return should_skip_page(url, content_hash)
 
     async def index_batch_with_embeddings(self, documents: List[Dict], meilisearch_index,
-                                          use_embeddings: bool, gemini_batch_size: int):
+                                          use_embeddings: bool, embedding_batch_size: int):
         """Indexe un batch de documents avec embeddings si activé"""
         if not documents:
             return
@@ -338,7 +370,7 @@ class MediaWikiCrawler:
         logger.info(f"📦 Indexation de {len(documents)} documents...")
 
         # Génération des embeddings si activé
-        if use_embeddings and self.gemini_client:
+        if use_embeddings and self.embedding_dim > 0:
             logger.debug(f"   -> Génération de {len(documents)} embeddings...")
             all_embeddings = []
             texts_to_embed = [
@@ -346,9 +378,9 @@ class MediaWikiCrawler:
                 for doc in documents
             ]
 
-            # Traiter par batches Gemini
-            for i in range(0, len(texts_to_embed), gemini_batch_size):
-                batch_texts = texts_to_embed[i:i + gemini_batch_size]
+            # Traiter par batches
+            for i in range(0, len(texts_to_embed), embedding_batch_size):
+                batch_texts = texts_to_embed[i:i + embedding_batch_size]
                 batch_embeddings = self.get_embeddings_batch(batch_texts)
 
                 if batch_embeddings:
@@ -359,7 +391,7 @@ class MediaWikiCrawler:
             # Ajouter les embeddings aux documents
             if len(all_embeddings) == len(documents):
                 for doc, embedding in zip(documents, all_embeddings):
-                    if embedding:
+                    if embedding and len(embedding) > 0:
                         doc["_vectors"] = {"default": embedding}
 
         # Indexation dans MeiliSearch
@@ -381,15 +413,21 @@ class MediaWikiCrawler:
         logger.info(f"   API: {self.api_url}")
         logger.info(f"   Namespaces: {self.namespaces}")
         logger.info(f"   📦 Indexation progressive par lots de {indexing_batch_size}")
-        if self.gemini_client and use_embeddings:
-            logger.info(f"   🤖 Embeddings: Gemini {self.embedding_model}")
+        if use_embeddings and self.embedding_dim > 0:
+            provider_name = os.getenv('EMBEDDING_PROVIDER', 'none')
+            logger.info(f"   🤖 Embeddings: {provider_name} ({self.embedding_dim}D)")
         else:
             logger.warning("   ⚠️  Embeddings: DÉSACTIVÉS")
 
         documents_buffer = []
 
+        # Headers complets pour contourner Cloudflare
         headers = {
-            'User-Agent': config.USER_AGENT
+            'User-Agent': config.USER_AGENT,
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': self.site_config['crawl'],
+            'Origin': self.site_config['crawl'].split('/wiki/')[0] if '/wiki/' in self.site_config['crawl'] else self.site_config['crawl'].rsplit('/', 1)[0],
         }
 
         # Correction: Utiliser le contexte SSL sécurisé
@@ -498,7 +536,7 @@ class MediaWikiCrawler:
             documents_buffer.clear()
 
         logger.info(f"✅ Crawl MediaWiki terminé")
-        if self.gemini_client and use_embeddings:
+        if use_embeddings and self.embedding_dim > 0:
             logger.info(f"   🤖 Documents avec embeddings générés")
 
     async def crawl(self) -> List[Dict]:
@@ -516,8 +554,13 @@ class MediaWikiCrawler:
 
         all_documents = []
 
+        # Headers complets pour contourner Cloudflare
         headers = {
-            'User-Agent': config.USER_AGENT
+            'User-Agent': config.USER_AGENT,
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': self.site_config['crawl'],
+            'Origin': self.site_config['crawl'].split('/wiki/')[0] if '/wiki/' in self.site_config['crawl'] else self.site_config['crawl'].rsplit('/', 1)[0],
         }
 
         # Correction: Utiliser le contexte SSL sécurisé
