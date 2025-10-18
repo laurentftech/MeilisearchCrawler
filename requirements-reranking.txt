@@ -1,0 +1,19 @@
+# Optional Reranking Dependencies
+# Install PyTorch and sentence-transformers for semantic reranking with Snowflake Arctic
+
+# NumPy
+numpy>=1.24.0
+
+# PyTorch (CPU version for Intel Mac)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.1.0
+
+# Sentence Transformers for Snowflake Arctic embeddings
+sentence-transformers>=2.3.0
+
+# Installation instructions for Intel Mac:
+#   pip install -r requirements-reranking.txt
+#
+# Note: This installs CPU-only PyTorch. For faster inference on Mac,
+# you could use the default PyTorch with MPS (Metal) support:
+#   pip install torch sentence-transformers

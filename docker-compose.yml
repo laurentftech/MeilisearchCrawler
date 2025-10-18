@@ -1,7 +1,7 @@
 services:
   # Meilisearch - Search engine
   meilisearch:
-    image: getmeili/meilisearch:v1.5
+    image: getmeili/meilisearch:v1.11
     container_name: kidsearch-meilisearch
     restart: unless-stopped
     ports:
