@@ -48,6 +48,10 @@ services:
       GOOGLE_CSE_API_KEY: ${GOOGLE_CSE_API_KEY:-}
       GOOGLE_CSE_ID: ${GOOGLE_CSE_ID:-}
       GOOGLE_GEMINI_API_KEY: ${GOOGLE_GEMINI_API_KEY:-}
+      # Embedding configuration
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-snowflake}
+      SNOWFLAKE_MODEL: ${SNOWFLAKE_MODEL:-Snowflake/snowflake-arctic-embed-s}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     volumes:
       - ./data:/app/data
       - ./config:/app/config

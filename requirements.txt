@@ -1,14 +1,14 @@
 
 # API Backend Dependencies
 # For PyTorch on Python 3.13: pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
-# Reranking Dependencies (optional - install separately if needed)
-# numpy>=1.24.0numpy==1.26.4
-# sentence-transformers>=2.3.0
-# torch>=2.1.0
+
+# Core dependencies
+numpy==1.26.4
 PyYAML
 aiohttp
 beautifulsoup4
 certifi
+curl-cffi
 fastapi>=0.109.0
 google-genai
 langdetect
@@ -21,7 +21,7 @@ python-dotenv
 requests
 sentence-transformers==5.1.1
 streamlit
-tdqm
+tqdm
 torch==2.2.2
 trafilatura
 uvicorn[standard]>=0.27.0
