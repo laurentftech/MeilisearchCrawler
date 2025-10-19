@@ -34,10 +34,16 @@ services:
       SERVICE: all
       DASHBOARD_PORT: 8501
       DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
       API_PORT: 8080
       API_HOST: 0.0.0.0
       API_WORKERS: 4
       API_ENABLED: "true"
+      # Display URLs (for clickable links in logs)
+      # Use DISPLAY_HOST for a single server IP, or the specific ones for different domains.
+      DISPLAY_HOST: ${DISPLAY_HOST:-}
+      DASHBOARD_DISPLAY_HOST: ${DASHBOARD_DISPLAY_HOST:-}
+      API_DISPLAY_HOST: ${API_DISPLAY_HOST:-}
       MEILI_URL: http://meilisearch:7700
       MEILI_KEY: ${MEILI_KEY:-masterKey}
       INDEX_NAME: ${INDEX_NAME:-kidsearch}
@@ -81,6 +87,7 @@ services:
   #     SERVICE: dashboard
   #     DASHBOARD_PORT: 8501
   #     DASHBOARD_HOST: 0.0.0.0
+  #     DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
   #     MEILI_URL: http://meilisearch:7700
   #     MEILI_KEY: ${MEILI_KEY:-masterKey}
   #     INDEX_NAME: ${INDEX_NAME:-kidsearch}

@@ -47,7 +47,7 @@ class SnowflakeReranker:
             logger.info(f"Loading Snowflake Arctic model: {self.model_name}")
 
             from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer(self.model_name)
+            self.model = SentenceTransformer(self.model_name, trust_remote_code=True)
 
             self._initialized = True
             logger.info("Snowflake Arctic model loaded successfully")

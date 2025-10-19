@@ -8,7 +8,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Query, HTTPException, status, Request
-from meilisearch.errors import MeilisearchApiError
+from meilisearch.errors import MeilisearchApiError, MeilisearchCommunicationError
 
 from ..models import (
     SearchRequest,
@@ -70,13 +70,21 @@ async def search(
     meilisearch_client = request.app.state.meilisearch_client
     cse_client = request.app.state.cse_client if hasattr(request.app.state, "cse_client") else None
 
-    # --- Vérification de la disponibilité de Meilisearch ---
-    if not meilisearch_client or not meilisearch_client.is_connected():
+    # --- Check Meilisearch availability ---
+    if not meilisearch_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Meilisearch client is not initialized.",
+        )
+    try:
+        await meilisearch_client.health()
+    except MeilisearchCommunicationError as e:
+        logger.error(f"Meilisearch connection check failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Meilisearch service is not available. Please check the connection.",
         )
-    # --- Fin de la vérification ---
+    # --- End check ---
 
     safety_filter = request.app.state.safety_filter
     merger = request.app.state.merger
@@ -113,7 +121,7 @@ async def search(
                     "Please run the crawler once (`python crawler.py`) to apply settings."
                 ),
             )
-        # Pour les autres erreurs Meilisearch, on continue sans résultats
+        # For other Meilisearch errors, continue without results
     except Exception as e:
         logger.error(f"Meilisearch search failed: {e}", exc_info=True)
         meilisearch_time_ms = (time.time() - meilisearch_start) * 1000

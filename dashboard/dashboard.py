@@ -22,51 +22,6 @@ st.set_page_config(
 )
 
 # =======================
-#  Portail d'Authentification
-# =======================
-
-def check_password():
-    """Retourne `True` si l'utilisateur a entré le bon mot de passe."""
-
-    def password_entered():
-        """Vérifie si le mot de passe entré par l'utilisateur est correct."""
-        try:
-            # Comparaison sécurisée pour éviter les attaques temporelles
-            password_correct = hmac.compare_digest(
-                st.session_state["password"], st.secrets["DASHBOARD_PASSWORD"]
-            )
-        except (KeyError, AttributeError):
-            password_correct = False
-
-        st.session_state["password_correct"] = password_correct
-        if password_correct:
-            del st.session_state["password"]  # Supprimer le mdp de la session
-
-    if st.session_state.get("password_correct", False):
-        return True
-
-    # Afficher le formulaire de connexion
-    st.title("🔒 " + get_translator(st.session_state.get("lang", "fr"))('auth_required', 'Authentication Required'))
-    st.text_input(
-        get_translator(st.session_state.get("lang", "fr"))('password_label', 'Password'), type="password", on_change=password_entered, key="password"
-    )
-    if "password_correct" in st.session_state and not st.session_state.password_correct:
-        st.error("😕 " + get_translator(st.session_state.get("lang", "fr"))('incorrect_password', 'Incorrect password.'))
-    return False
-
-def run_security_check():
-    """
-    Exécute la vérification de sécurité.
-    Retourne `False` si l'accès doit être bloqué, `True` sinon.
-    """
-    # Si DASHBOARD_PASSWORD est défini dans les secrets, on active la protection.
-    if "DASHBOARD_PASSWORD" in st.secrets:
-        return check_password()
-
-    # Sinon, l'accès est libre (cas "none" ou "forward_auth").
-    return True
-
-# =======================
 #  Internationalization (i18n)
 # =======================
 
@@ -81,6 +36,52 @@ if 'lang' not in st.session_state:
 
 # Créer la fonction de traduction
 t = get_translator(st.session_state.lang)
+
+# =======================
+#  Portail d'Authentification
+# =======================
+
+def check_password():
+    """Retourne `True` si l'utilisateur a entré le bon mot de passe."""
+
+    def password_entered():
+        """Vérifie si le mot de passe entré par l'utilisateur est correct."""
+        try:
+            # Comparaison sécurisée pour éviter les attaques temporelles
+            password_correct = hmac.compare_digest(
+                st.session_state["password"], os.getenv("DASHBOARD_PASSWORD")
+            )
+        except (KeyError, AttributeError):
+            password_correct = False
+
+        st.session_state["password_correct"] = password_correct
+        if password_correct:
+            del st.session_state["password"]  # Supprimer le mdp de la session
+
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # Afficher le formulaire de connexion
+    st.title(f"🔒 {t('auth_required')}")
+    st.text_input(
+        t('password_label'), type="password", on_change=password_entered, key="password"
+    )
+    if "password_correct" in st.session_state and not st.session_state.password_correct:
+        st.error(f"😕 {t('incorrect_password')}")
+    return False
+
+def run_security_check():
+    """
+    Exécute la vérification de sécurité.
+    Retourne `False` si l'accès doit être bloqué, `True` sinon.
+    """
+    # Si DASHBOARD_PASSWORD est défini dans les variables d'environnement, on active la protection.
+    dashboard_password = os.getenv("DASHBOARD_PASSWORD")
+    if dashboard_password:
+        return check_password()
+
+    # Sinon, l'accès est libre.
+    return True
 
 # =======================
 #  Vérification de l'accès
@@ -150,10 +151,21 @@ with st.sidebar:
     # Vérifier si l'API est activée
     api_enabled = os.getenv("API_ENABLED", "false").lower() == "true"
     if api_enabled:
-        api_host = os.getenv("API_HOST", "0.0.0.0")
-        api_port = os.getenv("API_PORT", "8080")
         st.metric(t('api_status'), f"🟢 {t('active')}")
-        st.caption(f"http://{api_host}:{api_port}")
+        
+        # Construire l'URL de l'API pour l'affichage
+        api_display_host = os.getenv("API_DISPLAY_HOST") or os.getenv("DISPLAY_HOST")
+        if api_display_host:
+            # Si un domaine public est fourni, on utilise https et pas de port
+            api_url = f"https://{api_display_host}"
+        else:
+            # Sinon, on construit une URL locale pour le développement
+            api_listen_host = os.getenv("API_HOST", "0.0.0.0")
+            display_host = "localhost" if api_listen_host == "0.0.0.0" else api_listen_host
+            api_port = os.getenv("API_PORT", "8080")
+            api_url = f"http://{display_host}:{api_port}"
+        
+        st.caption(f"URL: {api_url}")
     else:
         st.metric(t('api_status'), f"🔴 {t('disabled')}")
 
