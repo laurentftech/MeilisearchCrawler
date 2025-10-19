@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"Initializing Meilisearch client for {meili_url}...")
     meilisearch_client = MeilisearchClient(meili_url, meili_key, index_name)
     try:
-        await meilisearch_client.connect()
+        meilisearch_client.connect()
         app.state.meilisearch_client = meilisearch_client
         logger.info("✓ Meilisearch client initialized")
 

@@ -42,7 +42,7 @@ class SentenceTransformerReranker:
             logger.info(f"Loading Sentence Transformer model: {self.model_name}")
 
             from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer(self.model_name, trust_remote_code=True)
+            self.model = SentenceTransformer(self.model_name, trust_remote_code=True, device='cpu')
 
             self._initialized = True
             logger.info("Sentence Transformer model loaded successfully")
