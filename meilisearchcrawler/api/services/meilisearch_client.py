@@ -47,7 +47,7 @@ class MeilisearchClient:
         self.use_vector_search = False
 
         embedding_provider = os.getenv("EMBEDDING_PROVIDER", "none").lower()
-        if embedding_provider == "snowflake":
+        if embedding_provider == "snowflake" or embedding_provider == "sentence-transformer":
             try:
                 self.embedding_provider = create_embedding_provider(embedding_provider)
                 self.use_vector_search = self.embedding_provider.get_embedding_dim() > 0

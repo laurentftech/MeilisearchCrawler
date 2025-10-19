@@ -20,7 +20,7 @@ from .services.meilisearch_client import MeilisearchClient
 from .services.cse_client import CSEClient
 from .services.safety import SafetyFilter
 from .services.merger import SearchMerger
-from .services.reranker import SnowflakeReranker
+from .services.reranker import SentenceTransformerReranker
 from .services.stats_db import StatsDatabase
 
 logger = logging.getLogger(__name__)
@@ -128,8 +128,8 @@ async def lifespan(app: FastAPI):
     if reranking_enabled:
         logger.info("Initializing semantic reranker...")
         try:
-            reranker_model = os.getenv("RERANKER_MODEL", "Snowflake/snowflake-arctic-embed-m")
-            reranker = SnowflakeReranker(reranker_model)
+            reranker_model = os.getenv("RERANKER_MODEL", "intfloat/multilingual-e5-base")
+            reranker = SentenceTransformerReranker(reranker_model)
             reranker.initialize()
             app.state.reranker = reranker
             logger.info("✓ Reranker initialized")

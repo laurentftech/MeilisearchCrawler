@@ -1,5 +1,5 @@
 """
-Semantic reranking service using Snowflake Arctic-embed model.
+Semantic reranking service using Sentence Transformer models.
 Reranks search results based on semantic similarity to query.
 """
 
@@ -12,23 +12,18 @@ from ..models import SearchResult
 logger = logging.getLogger(__name__)
 
 
-class SnowflakeReranker:
+class SentenceTransformerReranker:
     """
-    Semantic reranker using Snowflake Arctic-embed model.
+    Semantic reranker using Sentence Transformer models.
     Runs on CPU for local deployment without GPU requirements.
     """
 
-    def __init__(self, model_name: str = "Snowflake/snowflake-arctic-embed-m"):
+    def __init__(self, model_name: str = "intfloat/multilingual-e5-base"):
         """
-        Initialize reranker with Snowflake Arctic model.
+        Initialize reranker with a Sentence Transformer model.
 
         Args:
-            model_name: HuggingFace model name
-                       Options:
-                       - snowflake-arctic-embed-xs (22M params, fastest)
-                       - snowflake-arctic-embed-s (33M params)
-                       - snowflake-arctic-embed-m (110M params, balanced)
-                       - snowflake-arctic-embed-l (335M params, best quality)
+            model_name: HuggingFace model name (e.g., 'intfloat/multilingual-e5-base')
         """
         self.model_name = model_name
         self.model = None
@@ -44,13 +39,13 @@ class SnowflakeReranker:
             return
 
         try:
-            logger.info(f"Loading Snowflake Arctic model: {self.model_name}")
+            logger.info(f"Loading Sentence Transformer model: {self.model_name}")
 
             from sentence_transformers import SentenceTransformer
             self.model = SentenceTransformer(self.model_name, trust_remote_code=True)
 
             self._initialized = True
-            logger.info("Snowflake Arctic model loaded successfully")
+            logger.info("Sentence Transformer model loaded successfully")
 
         except Exception as e:
             logger.error(f"Failed to load reranker model: {e}", exc_info=True)

@@ -1,8 +1,3 @@
-"""
-Module pour la génération d'embeddings avec différents providers
-Supporte: Google Gemini, Snowflake Arctic Embed
-"""
-
 from abc import ABC, abstractmethod
 from typing import List, Optional
 import logging
@@ -20,22 +15,21 @@ class EmbeddingProvider(ABC):
 
     @abstractmethod
     def encode(self, texts: List[str]) -> List[List[float]]:
-        """Génère des embeddings pour une liste de textes"""
+        """"Génère des embeddings pour une liste de textes"""
         pass
 
     @abstractmethod
     def get_embedding_dim(self) -> int:
-        """Retourne la dimension des embeddings"""
-        pass
+        """"Retourne la dimension des embeddings"""
 
     @abstractmethod
     def get_provider_name(self) -> str:
-        """Retourne le nom générique du provider (ex: 'snowflake')."""
+        """"Retourne le nom générique du provider (ex: 'gemini')."""
         pass
 
     @abstractmethod
     def get_model_name(self) -> str:
-        """Retourne le nom spécifique du modèle (ex: 'snowflake-arctic-embed-s')."""
+        """"Retourne le nom spécifique du modèle (ex: 'intfloat/multilingual-e5-base')."""
         pass
 
 
@@ -56,7 +50,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             raise RuntimeError(f"Impossible d'initialiser Gemini: {e}")
 
     def encode(self, texts: List[str]) -> List[List[float]]:
-        """Génère des embeddings avec Gemini"""
+        """"Génère des embeddings avec Gemini"""
         try:
             result = self.client.models.embed_content(
                 model=self.model_name,
@@ -80,56 +74,54 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         return self.model_name
 
 
-class SnowflakeEmbeddingProvider(EmbeddingProvider):
-    """Provider utilisant Snowflake Arctic Embed (local)"""
+class SentenceTransformerEmbeddingProvider(EmbeddingProvider):
+    """"Provider utilisant Sentence Transformers (local)"""
 
-    # Dimensions selon les modèles Snowflake
+    # Dimensions selon les modèles courants
     MODEL_DIMENSIONS = {
-        'Snowflake/snowflake-arctic-embed-xs': 384,  # 22M params
-        'Snowflake/snowflake-arctic-embed-s': 384,   # 33M params
-        'Snowflake/snowflake-arctic-embed-m': 768,   # 110M params
-        'Snowflake/snowflake-arctic-embed-l': 1024,  # 335M params
+        'intfloat/multilingual-e5-base': 768,
+        'Snowflake/snowflake-arctic-embed-xs': 384,
+        'Snowflake/snowflake-arctic-embed-s': 384,
+        'Snowflake/snowflake-arctic-embed-m': 768,
+        'intfloat/multilingual-e5-base': 768,
+        'Snowflake/snowflake-arctic-embed-l': 1024,
     }
 
-    def __init__(self, model_name: str = "Snowflake/snowflake-arctic-embed-s"):
+    def __init__(self, model_name: str = "intfloat/multilingual-e5-base"):
         super().__init__(model_name)
-        self.embedding_dim = self.MODEL_DIMENSIONS.get(model_name, 384)
+        self.embedding_dim = self.MODEL_DIMENSIONS.get(model_name, 768) # Default to 768 for e5-base
 
         try:
             from sentence_transformers import SentenceTransformer
-            logger.info(f"📦 Chargement du modèle Snowflake: {model_name}...")
+            logger.info(f"📦 Chargement du modèle Sentence Transformer: {model_name}...")
             self.model = SentenceTransformer(model_name, trust_remote_code=True)
-            logger.info(f"✓ Snowflake Arctic initialisé ({self.embedding_dim}D)")
+            logger.info(f"✓ Sentence Transformer initialisé ({self.embedding_dim}D)")
         except ImportError:
-            raise ImportError("Le package 'sentence-transformers' est requis pour Snowflake. Installez-le avec: pip install sentence-transformers")
+            raise ImportError("Le package 'sentence-transformers' est requis. Installez-le avec: pip install sentence-transformers")
         except Exception as e:
-            raise RuntimeError(f"Impossible de charger le modèle Snowflake {model_name}: {e}")
+            raise RuntimeError(f"Impossible de charger le modèle Sentence Transformer {model_name}: {e}")
 
     def encode(self, texts: List[str]) -> List[List[float]]:
-        """Génère des embeddings avec Snowflake Arctic"""
+        """"Génère des embeddings avec Sentence Transformer"""
         try:
-            # Snowflake Arctic utilise des queries et documents
-            # Pour la recherche, on encode tout comme des queries
             embeddings = self.model.encode(
                 texts,
-                prompt_name="query",  # Utiliser le prompt optimisé pour les queries
                 show_progress_bar=False,
                 convert_to_numpy=True
             )
             return embeddings.tolist()
         except Exception as e:
-            logger.error(f"❌ Erreur Snowflake encoding: {e}")
+            logger.error(f"❌ Erreur Sentence Transformer encoding: {e}")
             return [[] for _ in texts]
 
     def get_embedding_dim(self) -> int:
         return self.embedding_dim
 
     def get_provider_name(self) -> str:
-        return "snowflake"
+        return "sentence_transformer"
 
     def get_model_name(self) -> str:
-        # Retourne le nom court du modèle, ex: 'snowflake-arctic-embed-s'
-        return self.model_name.split('/')[-1] if '/' in self.model_name else self.model_name
+        return self.model_name
 
 
 class NoEmbeddingProvider(EmbeddingProvider):
@@ -140,7 +132,7 @@ class NoEmbeddingProvider(EmbeddingProvider):
         self.embedding_dim = 0
 
     def encode(self, texts: List[str]) -> List[List[float]]:
-        """Retourne des embeddings vides"""
+        """"Retourne des embeddings vides"""
         return [[] for _ in texts]
 
     def get_embedding_dim(self) -> int:
@@ -157,8 +149,8 @@ def create_embedding_provider(provider_name: Optional[str] = None) -> EmbeddingP
     """
     Factory pour créer un provider d'embeddings basé sur la configuration
 
-    Args:
-        provider_name: Nom du provider ('gemini', 'snowflake', 'none')
+    Args:\
+        provider_name: Nom du provider ('gemini', 'sentence_transformer', 'none')
                       Si None, lit depuis EMBEDDING_PROVIDER dans .env
 
     Returns:
@@ -184,13 +176,13 @@ def create_embedding_provider(provider_name: Optional[str] = None) -> EmbeddingP
             logger.warning("   Basculement vers mode sans embeddings")
             return NoEmbeddingProvider()
 
-    elif provider_name == 'snowflake':
-        model_name = os.getenv('SNOWFLAKE_MODEL', 'Snowflake/snowflake-arctic-embed-s')
+    elif provider_name == 'sentence_transformer':
+        model_name = os.getenv('SENTENCE_TRANSFORMER_MODEL', 'intfloat/multilingual-e5-base')
 
         try:
-            return SnowflakeEmbeddingProvider(model_name=model_name)
+            return SentenceTransformerEmbeddingProvider(model_name=model_name)
         except Exception as e:
-            logger.error(f"❌ Échec initialisation Snowflake: {e}")
+            logger.error(f"❌ Échec initialisation Sentence Transformer: {e}")
             logger.warning("   Basculement vers mode sans embeddings")
             return NoEmbeddingProvider()
 
@@ -200,5 +192,5 @@ def create_embedding_provider(provider_name: Optional[str] = None) -> EmbeddingP
 
     else:
         logger.warning(f"⚠️  Provider inconnu '{provider_name}' - embeddings désactivés")
-        logger.info("   Providers disponibles: gemini, snowflake, none")
+        logger.info("   Providers disponibles: gemini, sentence_transformer, none")
         return NoEmbeddingProvider()

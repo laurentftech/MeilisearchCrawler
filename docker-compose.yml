@@ -48,15 +48,15 @@ services:
       MEILI_KEY: ${MEILI_KEY:-masterKey}
       INDEX_NAME: ${INDEX_NAME:-kidsearch}
       RERANKING_ENABLED: ${RERANKING_ENABLED:-false}
-      RERANKER_MODEL: ${RERANKER_MODEL:-Snowflake/snowflake-arctic-embed-m}
+      RERANKER_MODEL: ${RERANKER_MODEL:-cnmoro/snowflake-arctic-embed-m-v2.0-cpu}
       MEILISEARCH_WEIGHT: ${MEILISEARCH_WEIGHT:-0.7}
       CSE_WEIGHT: ${CSE_WEIGHT:-0.3}
       GOOGLE_CSE_API_KEY: ${GOOGLE_CSE_API_KEY:-}
       GOOGLE_CSE_ID: ${GOOGLE_CSE_ID:-}
       GOOGLE_GEMINI_API_KEY: ${GOOGLE_GEMINI_API_KEY:-}
       # Embedding configuration
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-snowflake}
-      SNOWFLAKE_MODEL: ${SNOWFLAKE_MODEL:-Snowflake/snowflake-arctic-embed-s}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-sentence_transformer}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-base}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     volumes:
       - ./data:/app/data

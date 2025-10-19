@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 import meilisearch
 from meilisearch.errors import MeilisearchApiError, MeilisearchTimeoutError
+from transformers.models.distilbert.modeling_distilbert import Embeddings
 
 # Ajouter le répertoire racine au path pour les imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -24,7 +25,7 @@ API_KEY = os.getenv("MEILI_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "kidsearch")
 EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "none").lower()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SNOWFLAKE_MODEL = os.getenv("SNOWFLAKE_MODEL", "Snowflake/snowflake-arctic-embed-s")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
 
 # --- Validation ---
 if not all([MEILI_URL, API_KEY]):
@@ -128,7 +129,7 @@ try:
         print("   - Embedder 'default': userProvided (documents)")
         print("   - Embedder 'query': REST API Gemini (requêtes)")
 
-    elif EMBEDDING_PROVIDER == "snowflake":
+    elif EMBEDDING_PROVIDER == "snowflake" or EMBEDDING_PROVIDER == "sentence_transformer":
         # Configuration Snowflake (userProvided uniquement - le calcul se fait côté crawler/API)
         settings_payload = {
             "embedders": {
@@ -138,7 +139,7 @@ try:
                 }
             }
         }
-        print(f"   - Configuration: Snowflake ({embedding_dim}D)")
+        print(f"   - Configuration: Embeddings ({embedding_dim}D)")
         print("   - Embedder 'default': userProvided (documents + requêtes)")
         print("   - Note: Les embeddings de requêtes seront calculés par l'API backend")
 
@@ -169,7 +170,7 @@ try:
             if EMBEDDING_PROVIDER == "gemini":
                 print("   - Documents: userProvided (calculés par le crawler)")
                 print("   - Requêtes: REST API Gemini")
-            elif EMBEDDING_PROVIDER == "snowflake":
+            elif EMBEDDING_PROVIDER == "snowflake" or EMBEDDING_PROVIDER == "sentence_transformer":
                 print("   - Documents: userProvided (calculés par le crawler)")
                 print("   - Requêtes: userProvided (calculés par l'API)")
 

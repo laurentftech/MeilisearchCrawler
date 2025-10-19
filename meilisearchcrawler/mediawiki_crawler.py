@@ -393,8 +393,8 @@ class MediaWikiCrawler:
                 provider_name = os.getenv('EMBEDDING_PROVIDER', 'unknown')
 
                 # Pour Snowflake, stocker le modèle complet
-                if provider_name == 'snowflake':
-                    model_name = os.getenv('SNOWFLAKE_MODEL', 'Snowflake/snowflake-arctic-embed-s')
+                if provider_name == 'snowflake' or provider_name == 'infloat':
+                    model_name = os.getenv('EMBEDDING_MODEL', 'intfloat/multilingual-e5-base')
                     embedding_model = model_name.split('/')[-1] if '/' in model_name else model_name
                 else:
                     embedding_model = provider_name

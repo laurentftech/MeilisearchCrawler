@@ -18,11 +18,12 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY requirements.txt .
 COPY requirements-reranking.txt .
 
-# Installer les dépendances avec nettoyage et version CPU de torch
+# Installer dépendances avec nettoyage et version CPU de torch
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir -r requirements-reranking.txt
+    pip install --no-cache-dir -r requirements-reranking.txt && \
+    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
 
 # Nettoyage agressif pour alléger torch et dépendances lourdes
 RUN rm -rf /opt/venv/lib/python3.11/site-packages/nvidia* \
