@@ -1,48 +1,81 @@
 # --- Stage 1: Builder ---
 FROM python:3.11-slim AS builder
+
+LABEL maintainer="KidSearch Team"
+LABEL description="Builder stage for KidSearch dependencies"
+
 WORKDIR /app
 
-# Installer les outils de compilation nécessaires pour pip
-RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
+# Installer les outils minimaux nécessaires à la compilation de certaines libs (comme curl_cffi)
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl && \
+    rm -rf /var/lib/apt/lists/*
 
 # Créer l'environnement virtuel
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copier les dépendances
+# Copier les requirements
 COPY requirements.txt .
 COPY requirements-reranking.txt .
 
-# Installer pip + dépendances
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir torch==2.2.0+cpu --index-url https://download.pytorch.org/whl/cpu && \
+# Installer les dépendances avec nettoyage et version CPU de torch
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir -r requirements-reranking.txt
 
+# Nettoyage agressif pour alléger torch et dépendances lourdes
+RUN rm -rf /opt/venv/lib/python3.11/site-packages/nvidia* \
+           /opt/venv/lib/python3.11/site-packages/triton* \
+           /opt/venv/lib/python3.11/site-packages/torch/lib/*.a \
+           /opt/venv/lib/python3.11/site-packages/torch/include \
+           /opt/venv/lib/python3.11/site-packages/torch/share \
+           /opt/venv/lib/python3.11/site-packages/torch/test \
+           /opt/venv/lib/python3.11/site-packages/torch/_inductor \
+           /opt/venv/lib/python3.11/site-packages/torch/utils/benchmark \
+           /root/.cache /tmp/* /var/tmp/*
+
+
 # --- Stage 2: Final Image ---
 FROM python:3.11-slim
+
+LABEL maintainer="KidSearch Team"
+LABEL description="KidSearch Dashboard & API - Safe search engine for children"
+
 WORKDIR /app
 
-# Installer tini et curl (pour healthcheck)
-RUN apt-get update && apt-get install -y tini curl && rm -rf /var/lib/apt/lists/*
+# Installer tini et dépendances minimales
+RUN apt-get update && apt-get install -y --no-install-recommends tini curl && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copier venv depuis le builder
+# Copier l'environnement virtuel depuis le builder
 COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
 
-# Copier uniquement le code nécessaire
+# Copier le code source
 COPY meilisearchcrawler/ ./meilisearchcrawler
 COPY dashboard/ ./dashboard
-COPY start.py api.py crawler.py run_api.py ./
+COPY start.py .
+COPY api.py .
+COPY crawler.py .
+COPY run_api.py .
 
-# Créer les répertoires
-RUN mkdir -p data/logs config && chmod +x start.py
+# Activer le venv
+ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
 
-# Ports
-EXPOSE 8501 8080
+# Créer répertoires nécessaires
+RUN mkdir -p data/logs config && \
+    # Créer les fichiers __init__.py pour transformer les répertoires en packages
+    # Ceci est crucial pour que les imports relatifs de Streamlit fonctionnent
+    touch dashboard/__init__.py && \
+    touch dashboard/src/__init__.py
+
+# Nettoyage final
+RUN find /opt/venv/lib/python3.11/site-packages -type d -name "__pycache__" -exec rm -rf {} + && \
+    find /opt/venv/lib/python3.11/site-packages -type f -name "*.pyc" -delete && \
+    rm -rf /root/.cache /tmp/* /var/tmp/*
 
 # Variables d'environnement
-ENV PYTHONUNBUFFERED=1
 ENV SERVICE=all
 ENV DASHBOARD_PORT=8501
 ENV DASHBOARD_HOST=0.0.0.0
@@ -51,6 +84,11 @@ ENV API_HOST=0.0.0.0
 ENV API_WORKERS=4
 ENV API_ENABLED=true
 ENV MEILI_URL=http://meilisearch:7700
+# Forcer PyTorch à utiliser le CPU et ignorer les dépendances CUDA
+ENV CUDA_VISIBLE_DEVICES=-1
+
+# Exposer les ports
+EXPOSE 8501 8080
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

@@ -4,10 +4,6 @@
 # NumPy
 numpy>=1.24.0
 
-# PyTorch (CPU version for Intel Mac)
---extra-index-url https://download.pytorch.org/whl/cpu
-torch>=2.1.0
-
 # Sentence Transformers for Snowflake Arctic embeddings
 sentence-transformers>=2.3.0
 

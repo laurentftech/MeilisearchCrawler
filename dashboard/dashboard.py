@@ -2,15 +2,16 @@ import streamlit as st
 import os
 import hmac  # Pour la comparaison sécurisée de mots de passe
 from dotenv import load_dotenv
-
-from src.state import is_crawler_running
-from src.utils import load_cache_stats
-from src.meilisearch_client import get_meili_client
-from src.config import INDEX_NAME
-from src.i18n import get_translator
+import sys
+from pathlib import Path
 
 # Charger les variables d'environnement pour que Streamlit les voie
 load_dotenv()
+
+# Add project root to sys.path for module resolution
+# This is crucial for Streamlit to find modules like 'meilisearchcrawler.config'
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 # =======================
 #  Configuration & Page
@@ -35,7 +36,14 @@ if 'lang' not in st.session_state:
     st.session_state.lang = "fr"  # Langue par défaut
 
 # Créer la fonction de traduction
+from dashboard.src.i18n import get_translator
 t = get_translator(st.session_state.lang)
+
+# Import services after sys.path is set and translator is available
+from dashboard.src.state import is_crawler_running
+from dashboard.src.utils import load_cache_stats
+from dashboard.src.meilisearch_client import get_meili_client
+from meilisearchcrawler.config import INDEX_NAME
 
 # =======================
 #  Portail d'Authentification

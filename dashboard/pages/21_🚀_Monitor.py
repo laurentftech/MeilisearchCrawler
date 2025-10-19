@@ -9,13 +9,8 @@ import plotly.express as px
 import time
 import os
 import requests
-import sys
-from pathlib import Path
 
-# Add project root to path for imports
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-
+# Use absolute imports from the project root
 from dashboard.src.i18n import get_translator
 from dashboard.src.meilisearch_client import get_meili_client
 from meilisearchcrawler.config import INDEX_NAME

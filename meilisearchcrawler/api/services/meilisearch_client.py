@@ -14,7 +14,7 @@ from meilisearch.errors import MeilisearchApiError, MeilisearchCommunicationErro
 
 # Ajouter le répertoire racine au path pour les imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-from meilisearchcrawler.embeddings import create_embedding_provider, EmbeddingProvider
+from meilisearchcrawler.embeddings import create_embedding_provider, EmbeddingProvider, NoEmbeddingProvider
 
 from ..models import SearchResult, SearchSource, ImageResult
 
@@ -52,7 +52,7 @@ class MeilisearchClient:
                 self.embedding_provider = create_embedding_provider(embedding_provider)
                 self.use_vector_search = self.embedding_provider.get_embedding_dim() > 0
                 if self.use_vector_search:
-                    logger.info(f"✓ Vector search enabled with Snowflake ({self.embedding_provider.get_embedding_dim()}D)")
+                    logger.info(f"✓ Vector search enabled with {embedding_provider.title()} ({self.embedding_provider.get_embedding_dim()}D)")
             except Exception as e:
                 logger.warning(f"Failed to initialize embedding provider for queries: {e}")
                 self.use_vector_search = False
@@ -61,6 +61,9 @@ class MeilisearchClient:
             logger.info("✓ Vector search enabled with Gemini (REST embedder)")
             self.use_vector_search = True
         else:
+            # S'assurer que self.embedding_provider n'est jamais None
+            if self.embedding_provider is None:
+                self.embedding_provider = NoEmbeddingProvider()
             logger.info("Vector search disabled (no embedding provider)")
 
     def connect(self):

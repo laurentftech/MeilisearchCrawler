@@ -6,14 +6,9 @@ Provides documentation and quick start guide for the API
 import streamlit as st
 import pandas as pd
 import os
-import sys
-from pathlib import Path
 
-# Add project root to path for imports
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-
-from dashboard.src.i18n import get_translator
+# Use relative imports within the dashboard package
+from ..src.i18n import get_translator
 
 # Initialize translator
 if 'lang' not in st.session_state:
