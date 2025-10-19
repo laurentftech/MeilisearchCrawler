@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from meilisearch.errors import MeilisearchCommunicationError
 from fastapi.responses import JSONResponse
 
 from .routes import health, search
@@ -52,9 +53,34 @@ async def lifespan(app: FastAPI):
         meilisearch_client.connect()
         app.state.meilisearch_client = meilisearch_client
         logger.info("✓ Meilisearch client initialized")
+
+        # --- Vérifier la configuration de l'index ---
+        logger.info("Verifying Meilisearch index configuration...")
+        required_filterable = ["lang", "site"]
+        try:
+            is_configured = meilisearch_client.check_filterable_attributes(required_filterable)
+            if is_configured:
+                logger.info("✓ Index filterable attributes are correctly configured.")
+            else:
+                logger.warning("⚠️ Index filterable attributes are not configured.")
+                logger.warning(f"   Please ensure '{', '.join(required_filterable)}' are in 'filterableAttributes'.")
+                logger.warning("   You can run `python crawler.py` to apply the default settings.")
+        except Exception as e:
+            logger.error(f"✗ Could not verify index settings: {e}")
+            logger.error("  The API might not work as expected.")
+        # --- Fin de la vérification ---
+
+    except MeilisearchCommunicationError:
+        logger.critical("✗✗✗ CRITICAL: Could not connect to Meilisearch.")
+        logger.critical(f"    URL: {meili_url}")
+        logger.critical("    Please ensure Meilisearch is running and accessible.")
+        app.state.meilisearch_client = None
+
     except Exception as e:
-        logger.error(f"✗ Failed to initialize Meilisearch: {e}")
-        raise
+        logger.critical(f"✗✗✗ CRITICAL: An unexpected error occurred during Meilisearch initialization: {e}")
+        logger.critical("    The API will start in a DEGRADED state.")
+        logger.critical("    Search endpoints will return HTTP 503 Service Unavailable.")
+        app.state.meilisearch_client = None # Important: on s'assure que le client est None
 
     # Initialize Safety Filter
     logger.info("Initializing safety filter...")
@@ -126,7 +152,13 @@ async def lifespan(app: FastAPI):
 
     # Cleanup resources
     logger.info("Shutting down KidSearch API backend...")
-    # No specific cleanup needed for now
+    if hasattr(app.state, "meilisearch_client") and app.state.meilisearch_client.is_connected():
+        app.state.meilisearch_client.close()
+        logger.info("✓ Meilisearch client closed.")
+    if hasattr(app.state, "stats_db"):
+        # Pas de méthode close() explicite pour sqlite3, mais on peut loguer
+        logger.info("✓ Stats database connection will be closed.")
+    logger.info("KidSearch API backend shut down successfully.")
 
 
 def create_app() -> FastAPI:

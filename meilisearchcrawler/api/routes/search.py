@@ -8,6 +8,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Query, HTTPException, status, Request
+from meilisearch.errors import MeilisearchApiError
 
 from ..models import (
     SearchRequest,
@@ -68,6 +69,15 @@ async def search(
     # Get services from app state
     meilisearch_client = request.app.state.meilisearch_client
     cse_client = request.app.state.cse_client if hasattr(request.app.state, "cse_client") else None
+
+    # --- Vérification de la disponibilité de Meilisearch ---
+    if not meilisearch_client or not meilisearch_client.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Meilisearch service is not available. Please check the connection.",
+        )
+    # --- Fin de la vérification ---
+
     safety_filter = request.app.state.safety_filter
     merger = request.app.state.merger
     reranker = request.app.state.reranker if hasattr(request.app.state, "reranker") else None
@@ -91,6 +101,19 @@ async def search(
         )
         meilisearch_time_ms = (time.time() - meilisearch_start) * 1000
         logger.info(f"Meilisearch returned {len(meilisearch_results)} results in {meilisearch_time_ms:.2f}ms")
+    except MeilisearchApiError as e:
+        meilisearch_time_ms = (time.time() - meilisearch_start) * 1000
+        logger.error(f"Meilisearch API error: {e}", exc_info=True)
+        if e.code == "invalid_search_filter":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Meilisearch index is not configured correctly. "
+                    "Filterable attributes are missing. "
+                    "Please run the crawler once (`python crawler.py`) to apply settings."
+                ),
+            )
+        # Pour les autres erreurs Meilisearch, on continue sans résultats
     except Exception as e:
         logger.error(f"Meilisearch search failed: {e}", exc_info=True)
         meilisearch_time_ms = (time.time() - meilisearch_start) * 1000

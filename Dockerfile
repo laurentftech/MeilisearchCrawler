@@ -10,11 +10,13 @@ LABEL description="KidSearch Dashboard & API - Safe search engine for children"
 WORKDIR /app
 
 # Install system dependencies
+# tini is a lightweight init system that reaps zombie processes and forwards signals
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     curl \
     git \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
@@ -53,10 +55,16 @@ ENV API_HOST=0.0.0.0
 ENV API_WORKERS=4
 ENV API_ENABLED=true
 
+# Meilisearch URL default for Docker environments
+# Assumes Meilisearch is running in a container named 'meilisearch' on the same network
+# This can be overridden by docker-compose.
+ENV MEILI_URL=http://meilisearch:7700
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8501/_stcore/health || exit 1
 
 # Entry point
-ENTRYPOINT ["python", "start.py"]
+# Use tini to properly handle signals and manage child processes
+ENTRYPOINT ["/usr/bin/tini", "--", "python", "start.py"]
 CMD ["--docker"]

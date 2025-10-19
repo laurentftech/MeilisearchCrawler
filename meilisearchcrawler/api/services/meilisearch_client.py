@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 import meilisearch
-from meilisearch.errors import MeilisearchApiError
+from meilisearch.errors import MeilisearchApiError, MeilisearchCommunicationError
 
 # Ajouter le répertoire racine au path pour les imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
@@ -73,8 +73,12 @@ class MeilisearchClient:
             self.client.health()
             logger.info(f"Connected to Meilisearch at {self.url}, index: {self.index_name}")
 
+        except MeilisearchCommunicationError as e:
+            # Intercepter spécifiquement l'erreur de connexion pour un log propre
+            logger.error(f"Failed to connect to Meilisearch at {self.url}. Please check if the service is running and accessible.")
+            raise  # Renvoyer l'exception pour que le serveur puisse démarrer en mode dégradé
         except Exception as e:
-            logger.error(f"Failed to connect to Meilisearch: {e}", exc_info=True)
+            logger.error(f"An unexpected error occurred while connecting to Meilisearch: {e}")
             raise
 
     def is_healthy(self) -> bool:
