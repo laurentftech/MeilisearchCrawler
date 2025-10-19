@@ -65,8 +65,8 @@ class SentenceTransformerReranker:
             )
 
             # Double-check que le modèle est bien sur CPU
-            if hasattr(self.model, '_target_device'):
-                logger.info(f"Model device: {self.model._target_device}")
+            if hasattr(self.model, 'device'):
+                logger.info(f"Model device: {self.model.device}")
 
             self._initialized = True
             logger.info("Sentence Transformer model loaded successfully on CPU")

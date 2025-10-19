@@ -22,5 +22,6 @@ requests
 streamlit
 tqdm
 trafilatura
-torch==2.3.0
+sentence-transformers>=2.2.2
+transformers>=4.38.0
 uvicorn[standard]>=0.27.0

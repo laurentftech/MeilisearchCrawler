@@ -16,16 +16,11 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Copier les requirements
 COPY requirements.txt .
-COPY requirements-reranking.txt .
 
-# Installer dépendances avec nettoyage et version CPU de torch
-# IMPORTANT: Installer torch en premier pour s'assurer que la version CPU est utilisée par sentence-transformers
+# Installer les dépendances en une seule fois, en forçant la version CPU de PyTorch
+# pour toutes les sous-dépendances (comme sentence-transformers).
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir torch==2.3.0 --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir transformers==4.43.0 && \
-    pip install --no-cache-dir sentence-transformers==2.2.2 && \
-    pip install --no-cache-dir -r requirements.txt --no-deps && \
-    pip install --no-cache-dir -r requirements-reranking.txt
+    pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Désinstaller tous les packages NVIDIA/CUDA potentiels
 RUN pip uninstall -y nvidia-pip-plugin torch-triton nvidia-cuda-runtime-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cudnn-cu12 2>/dev/null || true
