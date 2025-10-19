@@ -1,6 +1,6 @@
-
 # API Backend Dependencies
-# For PyTorch on Python 3.13: pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
+# To ensure CPU-only PyTorch, install with:
+# pip install -r requirements.txt --index-url https://download.pytorch.org/whl/cpu
 
 # Core dependencies
 numpy==1.26.4
@@ -19,8 +19,8 @@ plotly
 pydantic>=2.6.0
 python-dotenv
 requests
-sentence-transformers==5.1.1
 streamlit
 tqdm
 trafilatura
+torch==2.3.0
 uvicorn[standard]>=0.27.0

@@ -19,21 +19,20 @@ COPY requirements.txt .
 COPY requirements-reranking.txt .
 
 # Installer dépendances avec nettoyage et version CPU de torch
+# IMPORTANT: Installer torch en premier pour s'assurer que la version CPU est utilisée par sentence-transformers
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir -r requirements-reranking.txt && \
-    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+    pip install --no-cache-dir torch==2.3.0 --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir transformers==4.43.0 && \
+    pip install --no-cache-dir sentence-transformers==2.2.2 && \
+    pip install --no-cache-dir -r requirements.txt --no-deps && \
+    pip install --no-cache-dir -r requirements-reranking.txt
 
+# Désinstaller tous les packages NVIDIA/CUDA potentiels
+RUN pip uninstall -y nvidia-pip-plugin torch-triton nvidia-cuda-runtime-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cudnn-cu12 2>/dev/null || true
 
 # Nettoyage agressif pour alléger torch et dépendances lourdes
 RUN rm -rf /opt/venv/lib/python3.11/site-packages/nvidia* \
            /opt/venv/lib/python3.11/site-packages/triton* \
-           /opt/venv/lib/python3.11/site-packages/torch/lib/*.a \
-           /opt/venv/lib/python3.11/site-packages/torch/include \
-           /opt/venv/lib/python3.11/site-packages/torch/share \
-           /opt/venv/lib/python3.11/site-packages/torch/test \
-           /opt/venv/lib/python3.11/site-packages/torch/_inductor \
-           /opt/venv/lib/python3.11/site-packages/torch/utils/benchmark \
            /root/.cache /tmp/* /var/tmp/*
 
 
@@ -66,8 +65,6 @@ ENV PYTHONUNBUFFERED=1
 
 # Créer répertoires nécessaires
 RUN mkdir -p data/logs config && \
-    # Créer les fichiers __init__.py pour transformer les répertoires en packages
-    # Ceci est crucial pour que les imports relatifs de Streamlit fonctionnent
     touch dashboard/__init__.py && \
     touch dashboard/src/__init__.py
 
@@ -86,7 +83,12 @@ ENV API_WORKERS=4
 ENV API_ENABLED=true
 ENV MEILI_URL=http://meilisearch:7700
 # Forcer PyTorch à utiliser le CPU et ignorer les dépendances CUDA
-ENV CUDA_VISIBLE_DEVICES=-1
+ENV CUDA_VISIBLE_DEVICES=""
+ENV FORCE_CUDA=0
+ENV FORCE_CPU=1
+ENV PYTORCH_ENABLE_MPS_FALLBACK=1
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
 
 # Exposer les ports
 EXPOSE 8501 8080

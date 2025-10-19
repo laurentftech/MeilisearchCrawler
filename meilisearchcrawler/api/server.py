@@ -40,6 +40,10 @@ async def lifespan(app: FastAPI):
         logger.warning(f"⚠️ .env file not found at {env_path}. Using system environment variables.")
     # --- End of .env loading ---
 
+    # Force PyTorch to use CPU if CUDA is not available
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+    logger.info("Set CUDA_VISIBLE_DEVICES=-1 to force CPU usage for PyTorch.")
+
     # Load environment variables
     meili_url = os.getenv("MEILI_URL", "http://localhost:7700")
     meili_key = os.getenv("MEILI_KEY", "")

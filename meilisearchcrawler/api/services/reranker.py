@@ -4,8 +4,14 @@ Reranks search results based on semantic similarity to query.
 """
 
 import logging
+import os
 from typing import List, Optional
 import numpy as np
+
+# Forcer l'utilisation du CPU avant l'import de torch
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["FORCE_CUDA"] = "0"
+os.environ["FORCE_CPU"] = "1"
 
 from ..models import SearchResult
 
@@ -41,11 +47,29 @@ class SentenceTransformerReranker:
         try:
             logger.info(f"Loading Sentence Transformer model: {self.model_name}")
 
+            # Import torch et forcer CPU explicitement
+            import torch
+            torch.set_num_threads(1)
+
+            # Vérifier qu'on n'utilise pas CUDA
+            if torch.cuda.is_available():
+                logger.warning("CUDA is available but will be IGNORED - forcing CPU")
+
             from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer(self.model_name, trust_remote_code=True, device='cpu')
+
+            # Force CPU device explicitement
+            self.model = SentenceTransformer(
+                self.model_name,
+                trust_remote_code=True,
+                device='cpu'
+            )
+
+            # Double-check que le modèle est bien sur CPU
+            if hasattr(self.model, '_target_device'):
+                logger.info(f"Model device: {self.model._target_device}")
 
             self._initialized = True
-            logger.info("Sentence Transformer model loaded successfully")
+            logger.info("Sentence Transformer model loaded successfully on CPU")
 
         except Exception as e:
             logger.error(f"Failed to load reranker model: {e}", exc_info=True)

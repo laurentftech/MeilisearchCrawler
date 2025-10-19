@@ -4,9 +4,6 @@
 # NumPy
 numpy>=1.24.0
 
-# Sentence Transformers for Snowflake Arctic embeddings
-sentence-transformers>=2.3.0
-
 # Installation instructions for Intel Mac:
 #   pip install -r requirements-reranking.txt
 #

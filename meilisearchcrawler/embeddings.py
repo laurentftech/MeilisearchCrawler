@@ -3,6 +3,11 @@ from typing import List, Optional
 import logging
 import os
 
+# Forcer l'utilisation du CPU avant tous les imports
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["FORCE_CUDA"] = "0"
+os.environ["FORCE_CPU"] = "1"
+
 logger = logging.getLogger(__name__)
 
 
@@ -92,10 +97,18 @@ class SentenceTransformerEmbeddingProvider(EmbeddingProvider):
         self.embedding_dim = self.MODEL_DIMENSIONS.get(model_name, 768) # Default to 768 for e5-base
 
         try:
+            # Import torch et forcer CPU explicitement
+            import torch
+            torch.set_num_threads(1)
+
+            # Vérifier qu'on n'utilise pas CUDA
+            if torch.cuda.is_available():
+                logger.warning("CUDA is available but will be IGNORED - forcing CPU")
+
             from sentence_transformers import SentenceTransformer
             logger.info(f"📦 Chargement du modèle Sentence Transformer: {model_name}...")
-            self.model = SentenceTransformer(model_name, trust_remote_code=True)
-            logger.info(f"✓ Sentence Transformer initialisé ({self.embedding_dim}D)")
+            self.model = SentenceTransformer(model_name, trust_remote_code=True, device="cpu")
+            logger.info(f"✓ Sentence Transformer initialisé ({self.embedding_dim}D) sur CPU")
         except ImportError:
             raise ImportError("Le package 'sentence-transformers' est requis. Installez-le avec: pip install sentence-transformers")
         except Exception as e:
