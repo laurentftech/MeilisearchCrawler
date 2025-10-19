@@ -28,6 +28,16 @@ class EmbeddingProvider(ABC):
         """Retourne la dimension des embeddings"""
         pass
 
+    @abstractmethod
+    def get_provider_name(self) -> str:
+        """Retourne le nom générique du provider (ex: 'snowflake')."""
+        pass
+
+    @abstractmethod
+    def get_model_name(self) -> str:
+        """Retourne le nom spécifique du modèle (ex: 'snowflake-arctic-embed-s')."""
+        pass
+
 
 class GeminiEmbeddingProvider(EmbeddingProvider):
     """Provider utilisant Google Gemini pour les embeddings"""
@@ -62,6 +72,12 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
     def get_embedding_dim(self) -> int:
         return self.embedding_dim
+
+    def get_provider_name(self) -> str:
+        return "gemini"
+
+    def get_model_name(self) -> str:
+        return self.model_name
 
 
 class SnowflakeEmbeddingProvider(EmbeddingProvider):
@@ -108,6 +124,13 @@ class SnowflakeEmbeddingProvider(EmbeddingProvider):
     def get_embedding_dim(self) -> int:
         return self.embedding_dim
 
+    def get_provider_name(self) -> str:
+        return "snowflake"
+
+    def get_model_name(self) -> str:
+        # Retourne le nom court du modèle, ex: 'snowflake-arctic-embed-s'
+        return self.model_name.split('/')[-1] if '/' in self.model_name else self.model_name
+
 
 class NoEmbeddingProvider(EmbeddingProvider):
     """Provider vide (pas d'embeddings)"""
@@ -122,6 +145,12 @@ class NoEmbeddingProvider(EmbeddingProvider):
 
     def get_embedding_dim(self) -> int:
         return 0
+
+    def get_provider_name(self) -> str:
+        return "none"
+
+    def get_model_name(self) -> str:
+        return "none"
 
 
 def create_embedding_provider(provider_name: Optional[str] = None) -> EmbeddingProvider:

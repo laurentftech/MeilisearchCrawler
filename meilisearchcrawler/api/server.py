@@ -7,6 +7,8 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Dict
+from pathlib import Path
+from dotenv import load_dotenv
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,13 +30,23 @@ async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI app."""
     logger.info("Starting KidSearch API backend...")
 
+    # --- Load .env file from project root ---
+    # This is crucial for local development
+    env_path = Path(__file__).parent.parent.parent / '.env'
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"✓ Loaded environment variables from {env_path}")
+    else:
+        logger.warning(f"⚠️ .env file not found at {env_path}. Using system environment variables.")
+    # --- End of .env loading ---
+
     # Load environment variables
     meili_url = os.getenv("MEILI_URL", "http://localhost:7700")
     meili_key = os.getenv("MEILI_KEY", "")
     index_name = os.getenv("INDEX_NAME", "kidsearch")
 
     # Initialize Meilisearch client
-    logger.info("Initializing Meilisearch client...")
+    logger.info(f"Initializing Meilisearch client for {meili_url}...")
     meilisearch_client = MeilisearchClient(meili_url, meili_key, index_name)
     try:
         meilisearch_client.connect()

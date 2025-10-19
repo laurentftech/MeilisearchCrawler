@@ -1,11 +1,16 @@
 import streamlit as st
 import os
+import hmac  # Pour la comparaison sécurisée de mots de passe
+from dotenv import load_dotenv
 
 from src.state import is_crawler_running
 from src.utils import load_cache_stats
 from src.meilisearch_client import get_meili_client
 from src.config import INDEX_NAME
 from src.i18n import get_translator
+
+# Charger les variables d'environnement pour que Streamlit les voie
+load_dotenv()
 
 # =======================
 #  Configuration & Page
@@ -15,6 +20,51 @@ st.set_page_config(
     page_icon="🕸️",
     layout="wide"
 )
+
+# =======================
+#  Portail d'Authentification
+# =======================
+
+def check_password():
+    """Retourne `True` si l'utilisateur a entré le bon mot de passe."""
+
+    def password_entered():
+        """Vérifie si le mot de passe entré par l'utilisateur est correct."""
+        try:
+            # Comparaison sécurisée pour éviter les attaques temporelles
+            password_correct = hmac.compare_digest(
+                st.session_state["password"], st.secrets["DASHBOARD_PASSWORD"]
+            )
+        except (KeyError, AttributeError):
+            password_correct = False
+
+        st.session_state["password_correct"] = password_correct
+        if password_correct:
+            del st.session_state["password"]  # Supprimer le mdp de la session
+
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # Afficher le formulaire de connexion
+    st.title("🔒 " + get_translator(st.session_state.get("lang", "fr"))('auth_required', 'Authentication Required'))
+    st.text_input(
+        get_translator(st.session_state.get("lang", "fr"))('password_label', 'Password'), type="password", on_change=password_entered, key="password"
+    )
+    if "password_correct" in st.session_state and not st.session_state.password_correct:
+        st.error("😕 " + get_translator(st.session_state.get("lang", "fr"))('incorrect_password', 'Incorrect password.'))
+    return False
+
+def run_security_check():
+    """
+    Exécute la vérification de sécurité.
+    Retourne `False` si l'accès doit être bloqué, `True` sinon.
+    """
+    # Si DASHBOARD_PASSWORD est défini dans les secrets, on active la protection.
+    if "DASHBOARD_PASSWORD" in st.secrets:
+        return check_password()
+
+    # Sinon, l'accès est libre (cas "none" ou "forward_auth").
+    return True
 
 # =======================
 #  Internationalization (i18n)
@@ -31,6 +81,12 @@ if 'lang' not in st.session_state:
 
 # Créer la fonction de traduction
 t = get_translator(st.session_state.lang)
+
+# =======================
+#  Vérification de l'accès
+# =======================
+if not run_security_check():
+    st.stop()  # Arrête l'exécution si l'authentification échoue
 
 
 # =======================

@@ -14,3 +14,4 @@ crawler.log
 /data/crawler.pid
 /data/crawl_history.json
 /data/crawler_cache.db
+/.streamlit/

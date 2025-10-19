@@ -54,6 +54,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     volumes:
       - ./data:/app/data
+      - ./.streamlit:/app/.streamlit
       - ./config:/app/config
     networks:
       - kidsearch-network

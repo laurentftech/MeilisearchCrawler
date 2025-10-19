@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiohttp
+from pydantic import ValidationError
 
 from ..models import SearchResult, SearchSource, ImageResult
 
@@ -179,17 +180,23 @@ class CSEClient:
             # Generate unique ID
             result_id = hashlib.md5(item["link"].encode()).hexdigest()
 
-            # Extract images if available
+            # Extract images if available, robustly handling validation errors
             images = []
             if "pagemap" in item and "cse_image" in item["pagemap"]:
                 for img in item["pagemap"]["cse_image"][:5]:  # Max 5 images
-                    images.append(
-                        ImageResult(
-                            url=img.get("src", ""),
-                            alt=None,
-                            description=None,
-                        )
-                    )
+                    try:
+                        src = img.get("src")
+                        if src:
+                            images.append(
+                                ImageResult(
+                                    url=src,
+                                    alt=None,
+                                    description=None,
+                                )
+                            )
+                    except ValidationError:
+                        logger.warning(f"Skipping invalid image URL from CSE: {img.get('src')}")
+                        continue
 
             result = SearchResult(
                 id=result_id,

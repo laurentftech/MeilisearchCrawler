@@ -388,11 +388,23 @@ class MediaWikiCrawler:
                 else:
                     all_embeddings.extend([None] * len(batch_texts))
 
-            # Ajouter les embeddings aux documents
+            # Ajouter les embeddings aux documents avec metadata du provider
             if len(all_embeddings) == len(documents):
+                provider_name = os.getenv('EMBEDDING_PROVIDER', 'unknown')
+
+                # Pour Snowflake, stocker le modèle complet
+                if provider_name == 'snowflake':
+                    model_name = os.getenv('SNOWFLAKE_MODEL', 'Snowflake/snowflake-arctic-embed-s')
+                    embedding_model = model_name.split('/')[-1] if '/' in model_name else model_name
+                else:
+                    embedding_model = provider_name
+
                 for doc, embedding in zip(documents, all_embeddings):
                     if embedding and len(embedding) > 0:
                         doc["_vectors"] = {"default": embedding}
+                        doc["embedding_provider"] = provider_name
+                        doc["embedding_model"] = embedding_model
+                        doc["embedding_dimensions"] = len(embedding)
 
         # Indexation dans MeiliSearch
         try:
