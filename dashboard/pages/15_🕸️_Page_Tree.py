@@ -8,15 +8,11 @@ import time
 import sys
 import os
 
-# Ajouter le répertoire racine au path pour l'import de CacheDB
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if BASE_DIR not in sys.path:
-    sys.path.append(BASE_DIR)
-
-from src.meilisearch_client import get_meili_client
-from src.config import INDEX_NAME
-from src.state import is_crawler_running
-from src.i18n import get_translator
+# Corrected imports to be absolute from the project root
+from dashboard.src.meilisearch_client import get_meili_client
+from dashboard.src.config import INDEX_NAME
+from dashboard.src.state import is_crawler_running
+from dashboard.src.i18n import get_translator
 from meilisearchcrawler.cache_db import CacheDB
 
 # Initialiser le traducteur
@@ -34,7 +30,8 @@ running = is_crawler_running()
 def load_cache_urls_from_db():
     """Charge les URLs depuis la base de données SQLite."""
     try:
-        db_path = os.path.join(BASE_DIR, 'data', 'crawler_cache.db')
+        # Path is relative to the project root, where the app is started from
+        db_path = os.path.join('data', 'crawler_cache.db')
         cache_db = CacheDB(db_path=db_path)
         return cache_db.get_all_urls()
     except Exception as e:
@@ -50,9 +47,10 @@ else:
         sites_list = [t("tree.all_sites")]
         with st.spinner(t("tree.loading_sites")):
             try:
-                facet_result = index_ref.search("", {'facets': ['site'], 'limit': 0})
-                if 'facetDistribution' in facet_result and 'site' in facet_result['facetDistribution']:
-                    sites_list.extend(list(facet_result['facetDistribution']['site'].keys()))
+                # Corrected: Use new SDK syntax (keyword args) and result object
+                facet_result = index_ref.search("", facets=['site'], limit=0)
+                if facet_result.facet_distribution and 'site' in facet_result.facet_distribution:
+                    sites_list.extend(list(facet_result.facet_distribution['site'].keys()))
             except Exception:
                 pass
 
@@ -65,10 +63,14 @@ else:
             filter_site = st.selectbox(t("tree.filter_site"), sites_list, help=t("tree.filter_site_help"))
 
         with st.spinner(t("tree.loading_pages").format(max_pages=max_pages)):
-            params = {'limit': max_pages, 'fields': ['url', 'site', 'title', 'indexed_at', 'last_modified', 'timestamp', 'last_crawled_at', 'content_hash']}
+            params = {
+                'limit': max_pages, 
+                'attributes_to_retrieve': ['url', 'site', 'title', 'indexed_at', 'last_modified', 'timestamp', 'last_crawled_at', 'content_hash']
+            }
             if filter_site != t("tree.all_sites"):
                 params['filter'] = f'site = "{filter_site}"'
-            documents = index_ref.get_documents(params).results
+            # Corrected: Use new SDK syntax (**params)
+            documents = index_ref.get_documents(**params).results
 
         if not documents:
             st.warning(t("tree.no_pages_found"))
@@ -76,13 +78,13 @@ else:
             data_map = {}
             now = datetime.now()
 
+            # Corrected: documents are now dicts
             for doc in documents:
-                doc_dict = doc if isinstance(doc, dict) else doc.__dict__
-                url = doc_dict.get('url', '')
+                url = doc.get('url', '')
                 if not url: continue
 
-                indexed_at = doc_dict.get('indexed_at') or doc_dict.get('last_modified') or doc_dict.get('timestamp')
-                last_crawled = doc_dict.get('last_crawled_at') or indexed_at
+                indexed_at = doc.get('indexed_at') or doc.get('last_modified') or doc.get('timestamp')
+                last_crawled = doc.get('last_crawled_at') or indexed_at
 
                 freshness_days, freshness_category, freshness_color = (999, t("tree.unknown_date"), "#6b7280")
                 if indexed_at:
@@ -108,9 +110,9 @@ else:
                 parsed = urlparse(url)
                 path_parts = [p for p in parsed.path.split('/') if p]
                 data_map[url] = {
-                    'site': doc_dict.get('site', 'Unknown'), 'path_parts': path_parts,
+                    'site': doc.get('site', 'Unknown'), 'path_parts': path_parts,
                     'page': path_parts[-1][:40] if path_parts else t("tree.homepage"),
-                    'url': url, 'title': doc_dict.get('title', t("tree.no_title"))[:100],
+                    'url': url, 'title': doc.get('title', t("tree.no_title"))[:100],
                     'freshness_days': freshness_days, 'freshness_category': freshness_category, 'freshness_color': freshness_color,
                     'last_crawl_days': last_crawl_days, 'last_crawl_text': last_crawl_text, 'status': 'indexed'
                 }

@@ -8,7 +8,7 @@ import pandas as pd
 import os
 
 # Use relative imports within the dashboard package
-from ..src.i18n import get_translator
+from dashboard.src.i18n import get_translator
 
 # Initialize translator
 if 'lang' not in st.session_state:

@@ -5,8 +5,7 @@ Script de diagnostic rapide pour vérifier l'état de l'indexation MeiliSearch
 
 import os
 from dotenv import load_dotenv
-import meilisearch
-from datetime import datetime
+from meilisearch_python_sdk import Client
 
 load_dotenv()
 
@@ -21,7 +20,7 @@ def check_status():
     print("=" * 60)
 
     try:
-        client = meilisearch.Client(MEILI_URL, MEILI_KEY)
+        client = Client(url=MEILI_URL, api_key=MEILI_KEY)
         index = client.index(INDEX_NAME)
 
         # 1. Statistiques de l'index
@@ -33,70 +32,35 @@ def check_status():
         # 2. Tâches en attente
         print("\n⏳ Tâches en attente:")
         try:
-            import requests
-            headers = {"Authorization": f"Bearer {MEILI_KEY}"}
-            response = requests.get(
-                f"{MEILI_URL}/tasks",
-                params={
-                    'indexUids': INDEX_NAME,
-                    'statuses': 'enqueued,processing',
-                    'limit': 20
-                },
-                headers=headers
-            )
-            pending_data = response.json()
-            pending_total = pending_data.get('total', 0)
-            pending_results = pending_data.get('results', [])
+            pending_tasks = client.get_tasks(index_ids=[INDEX_NAME], statuses=['enqueued', 'processing'], limit=20)
+            print(f"   Total: {pending_tasks.total}")
 
-            print(f"   Total: {pending_total}")
-
-            if pending_total > 0:
+            if pending_tasks.total > 0:
                 print("\n   Détails:")
-                for task in pending_results[:5]:
-                    task_type = task.get('type', 'unknown')
-                    status = task.get('status', 'unknown')
-                    uid = task.get('uid', '?')
-                    print(f"   - Task #{uid}: {task_type} [{status}]")
+                for task in pending_tasks.results[:5]:
+                    print(f"   - Task #{task.uid}: {task.type} [{task.status}]")
         except Exception as e:
             print(f"   ⚠️  Erreur lecture tâches en attente: {e}")
 
         # 3. Dernières tâches terminées
         print("\n✅ Dernières tâches terminées:")
         try:
-            response = requests.get(
-                f"{MEILI_URL}/tasks",
-                params={
-                    'indexUids': INDEX_NAME,
-                    'statuses': 'succeeded,failed',
-                    'limit': 5
-                },
-                headers=headers
-            )
-            completed_data = response.json()
-            completed_results = completed_data.get('results', [])
-
-            for task in completed_results:
-                status = task.get('status', 'unknown')
-                status_icon = "✅" if status == "succeeded" else "❌"
-                task_type = task.get('type', 'unknown')
-                uid = task.get('uid', '?')
-
-                # Extraire le nombre de documents si disponible
+            completed_tasks = client.get_tasks(index_ids=[INDEX_NAME], statuses=['succeeded', 'failed'], limit=5)
+            for task in completed_tasks.results:
+                status_icon = "✅" if task.status == "succeeded" else "❌"
                 details = ""
-                task_details = task.get('details', {})
-                if task_details and 'receivedDocuments' in task_details:
-                    details = f" ({task_details['receivedDocuments']} docs)"
-
-                print(f"   {status_icon} Task #{uid}: {task_type}{details}")
+                if task.details and task.details.get('receivedDocuments'):
+                    details = f" ({task.details['receivedDocuments']} docs)"
+                print(f"   {status_icon} Task #{task.uid}: {task.type}{details}")
         except Exception as e:
             print(f"   ⚠️  Erreur lecture tâches terminées: {e}")
 
         # 4. Distribution par site
         print("\n🌐 Distribution par site:")
         try:
-            result = index.search("", {'facets': ['site'], 'limit': 0})
-            if 'facetDistribution' in result and 'site' in result['facetDistribution']:
-                sites = result['facetDistribution']['site']
+            result = index.search("", facets=['site'], limit=0)
+            if result.facet_distribution and 'site' in result.facet_distribution:
+                sites = result.facet_distribution['site']
                 for site, count in sorted(sites.items(), key=lambda x: x[1], reverse=True):
                     print(f"   - {site}: {count:,} documents")
             else:
@@ -107,12 +71,12 @@ def check_status():
         # 5. Vérification des embeddings
         print("\n🤖 Embeddings:")
         try:
-            with_vectors = index.search("", {'filter': '_vectors.default EXISTS', 'limit': 0})
-            without_vectors = index.search("", {'filter': '_vectors.default NOT EXISTS', 'limit': 0})
+            with_vectors = index.search("", filter='_vectors.default EXISTS', limit=0)
+            without_vectors = index.search("", filter='_vectors.default NOT EXISTS', limit=0)
 
-            total = with_vectors.get('estimatedTotalHits', 0) + without_vectors.get('estimatedTotalHits', 0)
-            with_count = with_vectors.get('estimatedTotalHits', 0)
-            without_count = without_vectors.get('estimatedTotalHits', 0)
+            total = with_vectors.estimated_total_hits + without_vectors.estimated_total_hits
+            with_count = with_vectors.estimated_total_hits
+            without_count = without_vectors.estimated_total_hits
 
             print(f"   Avec embeddings: {with_count:,}")
             print(f"   Sans embeddings: {without_count:,}")

@@ -1,6 +1,6 @@
 """
 Configuration automatique de MeiliSearch pour les embeddings multi-providers.
-Supporte: Gemini, Snowflake Arctic Embed, et None
+Supporte: Gemini, HuggingFace, et None
 """
 
 import os
@@ -8,9 +8,8 @@ import sys
 import requests
 from dotenv import load_dotenv
 from pathlib import Path
-import meilisearch
-from meilisearch.errors import MeilisearchApiError, MeilisearchTimeoutError
-from transformers.models.distilbert.modeling_distilbert import Embeddings
+from meilisearch_python_sdk import Client
+from meilisearch_python_sdk.errors import MeilisearchApiError, MeilisearchTimeoutError
 
 # Ajouter le répertoire racine au path pour les imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -20,12 +19,11 @@ from meilisearchcrawler.embeddings import create_embedding_provider
 print("⚙️  Chargement de la configuration...")
 load_dotenv()
 
-MEILI_URL = os.getenv("MEILI_URL", "http://meilisearch:7700")
+MEILI_URL = os.getenv("MEILI_URL", "http://localhost:7700")
 API_KEY = os.getenv("MEILI_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "kidsearch")
 EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "none").lower()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
 
 # --- Validation ---
 if not all([MEILI_URL, API_KEY]):
@@ -65,10 +63,7 @@ if use_embeddings:
             "Content-Type": "application/json"
         }
         payload = {
-            "multimodal": True,
-            "vectorStoreSetting": True,
-            "compositeEmbedders": True,
-            "chatCompletions": True
+            "vectorStore": True,
         }
         r = requests.patch(f"{MEILI_URL}/experimental-features", json=payload, headers=headers)
         r.raise_for_status()
@@ -79,48 +74,27 @@ if use_embeddings:
 
 # --- Connexion Meilisearch ---
 try:
-    client = meilisearch.Client(MEILI_URL, API_KEY)
+    client = Client(url=MEILI_URL, api_key=API_KEY)
     index = client.index(INDEX_NAME)
 
     # --- Configuration des embedders ---
     print("\n🔄 Mise à jour des embedders...")
 
     if not use_embeddings:
-        # Désactiver les embeddings
-        settings_payload = {
-            "embedders": {}
-        }
+        settings_payload = {"embedders": {}}
         print("   - Configuration: AUCUN embedder (recherche texte uniquement)")
 
     elif EMBEDDING_PROVIDER == "gemini":
-        # Configuration Gemini (REST embedder pour les requêtes utilisateur)
         embedder_url = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
-
         settings_payload = {
             "embedders": {
-                "default": {
-                    "source": "userProvided",
-                    "dimensions": 768
-                },
+                "default": {"source": "userProvided", "dimensions": 768},
                 "query": {
                     "source": "rest",
                     "url": embedder_url,
-                    "request": {
-                        "model": "models/text-embedding-004",
-                        "content": {
-                            "parts": [
-                                {"text": "{{text}}"}
-                            ]
-                        }
-                    },
-                    "headers": {
-                        "x-goog-api-key": GEMINI_API_KEY
-                    },
-                    "response": {
-                        "embedding": {
-                            "values": "{{embedding}}"
-                        }
-                    },
+                    "apiKey": GEMINI_API_KEY,
+                    "request": {"model": "models/text-embedding-004", "content": {"parts": [{"text": "{{text}}"}]}},
+                    "response": {"embedding": {"values": "{{embedding}}"}},
                     "dimensions": 768
                 }
             }
@@ -129,19 +103,15 @@ try:
         print("   - Embedder 'default': userProvided (documents)")
         print("   - Embedder 'query': REST API Gemini (requêtes)")
 
-    elif EMBEDDING_PROVIDER == "snowflake" or EMBEDDING_PROVIDER == "sentence_transformer":
-        # Configuration Snowflake (userProvided uniquement - le calcul se fait côté crawler/API)
+    elif EMBEDDING_PROVIDER == "huggingface":
         settings_payload = {
             "embedders": {
-                "default": {
-                    "source": "userProvided",
-                    "dimensions": embedding_dim
-                }
+                "default": {"source": "userProvided", "dimensions": embedding_dim}
             }
         }
         print(f"   - Configuration: Embeddings ({embedding_dim}D)")
         print("   - Embedder 'default': userProvided (documents + requêtes)")
-        print("   - Note: Les embeddings de requêtes seront calculés par l'API backend")
+        print("   - Note: Les embeddings seront calculés par l'API backend ou le crawler")
 
     else:
         print(f"\n❌ Provider '{EMBEDDING_PROVIDER}' non supporté.")
@@ -151,12 +121,11 @@ try:
     task = index.update_settings(settings_payload)
     print(f"   - Tâche soumise (UID: {task.task_uid}), en attente de résolution...")
 
+    timeout = 120000 if EMBEDDING_PROVIDER == "gemini" else 30000
     if EMBEDDING_PROVIDER == "gemini":
         print("   ⏳ Cela peut prendre jusqu'à 2 minutes (test de connexion à Gemini)...")
-        timeout = 120000  # 2 minutes
     else:
         print("   ⏳ En cours...")
-        timeout = 30000   # 30 secondes
 
     try:
         final_task = client.wait_for_task(task.task_uid, timeout_in_ms=timeout)
@@ -166,35 +135,22 @@ try:
             print("\n📋 Résumé de la configuration:")
             print(f"   - Provider: {EMBEDDING_PROVIDER}")
             print(f"   - Dimensions: {embedding_dim}D" if use_embeddings else "   - Embeddings: Désactivés")
-
-            if EMBEDDING_PROVIDER == "gemini":
-                print("   - Documents: userProvided (calculés par le crawler)")
-                print("   - Requêtes: REST API Gemini")
-            elif EMBEDDING_PROVIDER == "snowflake" or EMBEDDING_PROVIDER == "sentence_transformer":
-                print("   - Documents: userProvided (calculés par le crawler)")
-                print("   - Requêtes: userProvided (calculés par l'API)")
-
         else:
             print("\n❌ La mise à jour a échoué :")
             print(f"   Status: {final_task.status}")
-            if hasattr(final_task, 'error') and final_task.error:
+            if final_task.error:
                 print(f"   Erreur: {final_task.error}")
 
     except MeilisearchTimeoutError:
         print("\n⏱️  Timeout dépassé, vérification manuelle du statut de la tâche...")
         task_status = client.get_task(task.task_uid)
         print(f"   Status actuel: {task_status.status}")
-
         if task_status.status == "succeeded":
             print("✅ La configuration a réussi !")
-        elif task_status.status == "failed":
-            print("❌ La configuration a échoué :")
-            if hasattr(task_status, 'error') and task_status.error:
-                print(f"   Erreur: {task_status.error}")
+        elif task_status.status == "failed" and task_status.error:
+            print(f"❌ La configuration a échoué : {task_status.error}")
         else:
             print(f"⏳ La tâche est toujours en cours ({task_status.status})")
-            print("   Vous pouvez vérifier plus tard avec:")
-            print(f"   curl -H 'Authorization: Bearer {API_KEY}' {MEILI_URL}/tasks/{task.task_uid}")
 
 except MeilisearchApiError as e:
     print(f"\n❌ ERREUR API Meilisearch: {e}")

@@ -2,11 +2,14 @@ import streamlit as st
 from datetime import datetime
 from langdetect import detect, LangDetectException
 
-from src.meilisearch_client import get_meili_client
-from src.config import INDEX_NAME
-from src.i18n import get_translator
+# Corrected imports for the new SDK and proper pathing
+from dashboard.src.meilisearch_client import get_meili_client
+from meilisearch_python_sdk.models.search import SearchResults
+from meilisearch_python_sdk.errors import MeilisearchApiError
+from dashboard.src.config import INDEX_NAME
+from dashboard.src.i18n import get_translator
 
-# Initialiser le traducteur
+# Initialize translator
 if 'lang' not in st.session_state:
     st.session_state.lang = "fr"
 t = get_translator(st.session_state.lang)
@@ -19,7 +22,7 @@ st.set_page_config(
 st.title(t("search.title"))
 st.markdown(t("search.subtitle"))
 
-# --- Initialisation ---
+# --- Initialization ---
 meili_client = get_meili_client()
 
 if not meili_client:
@@ -36,7 +39,7 @@ except Exception as e:
     st.error(f"{t('search.error_index_access')}: {e}")
     st.stop()
 
-# --- Barre de recherche et filtres ---
+# --- Search bar and filters ---
 with st.form(key="search_form"):
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -53,67 +56,60 @@ with st.form(key="search_form"):
             disabled=not use_hybrid
         )
     
-    # Ajout du bouton de soumission
     submitted = st.form_submit_button(label=t("search.search_button_label"), type="primary")
 
-# --- Logique de recherche ---
+# --- Search logic ---
 if submitted and query:
     with st.spinner(t("search.spinner_searching")):
+        # Parameters updated to snake_case for the new SDK
         search_params = {
             "limit": 20,
-            "attributesToRetrieve": ['title', 'url', 'excerpt', 'site', 'images', 'timestamp'],
-            "attributesToHighlight": ['title', 'excerpt'],
-            "highlightPreTag": "**",
-            "highlightPostTag": "**"
+            "attributes_to_retrieve": ['title', 'url', 'excerpt', 'site', 'images', 'timestamp'],
+            "attributes_to_highlight": ['title', 'excerpt'],
+            "highlight_pre_tag": "**",
+            "highlight_post_tag": "**"
         }
 
-        # --- Filtres intelligents ---
+        # --- Smart filters ---
         filters = []
 
-        # --- Détection intelligente de la langue de la requête ---
         try:
-            # On détecte la langue de la requête de l'utilisateur
             query_lang = detect(query)
-            # On s'assure que la langue détectée est l'une de celles que nous gérons
             if query_lang in ['fr', 'en']:
                 filters.append(f"lang = {query_lang}")
-                st.caption(f"Langue de recherche détectée : `{query_lang.upper()}`")
+                st.caption(f"Search language detected: `{query_lang.upper()}`")
             else:
-                # Si la langue n'est pas gérée, on se rabat sur la langue de l'interface
                 filters.append(f"lang = {st.session_state.get('lang', 'fr')}")
         except LangDetectException:
-            # Si la détection échoue (requête trop courte), on utilise la langue de l'interface
             filters.append(f"lang = {st.session_state.get('lang', 'fr')}")
 
-        # --- Filtre par mots-clés pour la pertinence ---
-        # S'assure que les mots de la requête sont présents, puis la sémantique classe les résultats
         keywords = [f'"{word}"' for word in query.split() if len(word) > 2]
         if keywords:
-            filters.append(f"title IN [{', '.join(keywords)}] OR content IN [{', '.join(keywords)}]")
+            # Corrected filter to use 'excerpt' instead of 'content'
+            filters.append(f"title IN [{', '.join(keywords)}] OR excerpt IN [{', '.join(keywords)}]")
 
-        search_params["filter"] = " AND ".join(filters)
+        if filters:
+            search_params["filter"] = " AND ".join(filters)
 
         search_query = query
         if use_hybrid:
-            # Pour les versions récentes de Meilisearch, la requête 'q' est au premier niveau,
-            # et 'hybrid' ne contient que les options comme 'semanticRatio'.
-            # Il faut aussi spécifier l'embedder à utiliser pour la requête.
+            # Hybrid search parameters updated to snake_case
             search_params["hybrid"] = {
-                "semanticRatio": semantic_ratio, "embedder": "query"
+                "semantic_ratio": semantic_ratio,
+                "embedder": "default"
             }
-            # search_query reste la requête principale
 
         try:
-            response = index.search(search_query, search_params)
-            hits = response['hits']
+            # Use the new SDK which returns a SearchResults object
+            response: SearchResults = index.search(search_query, **search_params)
+            hits = response.hits
             st.success(t("search.results_summary").format(
                 count=len(hits),
-                total=response['estimatedTotalHits'],
-                time=response['processingTimeMs']
+                total=response.estimated_total_hits,
+                time=response.processing_time_ms
             ))
             st.markdown("---")
 
-            # --- Affichage des résultats ---
             if not hits:
                 st.warning(t("search.no_results_found"))
             else:
@@ -142,8 +138,10 @@ if submitted and query:
 
                     st.markdown("---")
 
-        except Exception as e:
+        except MeilisearchApiError as e:
             st.error(f"{t('search.error_during_search')}: {e}")
+        except Exception as e:
+            st.error(f"{t('search.error_during_search')}: An unexpected error occurred: {e}")
 
 elif not query:
     st.info(t("search.info_start_searching"))

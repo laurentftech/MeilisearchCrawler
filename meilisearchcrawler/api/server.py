@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from meilisearch.errors import MeilisearchCommunicationError
+from meilisearch_python_sdk.errors import MeilisearchCommunicationError
 from fastapi.responses import JSONResponse
 
 from .routes import health, search
@@ -20,10 +20,13 @@ from .services.meilisearch_client import MeilisearchClient
 from .services.cse_client import CSEClient
 from .services.safety import SafetyFilter
 from .services.merger import SearchMerger
-from .services.reranker import SentenceTransformerReranker
+from .services.reranker import HuggingFaceAPIReranker
 from .services.stats_db import StatsDatabase
 
 logger = logging.getLogger(__name__)
+
+from fastapi.middleware.cors import CORSMiddleware
+
 
 
 @asynccontextmanager
@@ -38,11 +41,6 @@ async def lifespan(app: FastAPI):
         logger.info(f"✓ Loaded environment variables from {env_path}")
     else:
         logger.warning(f"⚠️ .env file not found at {env_path}. Using system environment variables.")
-    # --- End of .env loading ---
-
-    # Force PyTorch to use CPU if CUDA is not available
-    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-    logger.info("Set CUDA_VISIBLE_DEVICES=-1 to force CPU usage for PyTorch.")
 
     # Load environment variables
     meili_url = os.getenv("MEILI_URL", "http://localhost:7700")
@@ -53,7 +51,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"Initializing Meilisearch client for {meili_url}...")
     meilisearch_client = MeilisearchClient(meili_url, meili_key, index_name)
     try:
-        meilisearch_client.connect()
+        await meilisearch_client.connect()  # Await the async connection
         app.state.meilisearch_client = meilisearch_client
         logger.info("✓ Meilisearch client initialized")
 
@@ -61,7 +59,7 @@ async def lifespan(app: FastAPI):
         logger.info("Verifying Meilisearch index configuration...")
         required_filterable = ["lang", "site"]
         try:
-            index = meilisearch_client.client.index(index_name)
+            index = meilisearch_client.index
             settings = await index.get_settings()
             current_filterable = settings.filterable_attributes or []
             is_configured = all(attr in current_filterable for attr in required_filterable)
@@ -76,17 +74,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"✗ Could not verify index settings: {e}")
             logger.error("  The API might not work as expected.")
-        # --- End verification ---
 
     except MeilisearchCommunicationError:
-        logger.critical("✗✗✗ CRITICAL: Could not connect to Meilisearch.")
-        logger.critical(f"    URL: {meili_url}")
-        logger.critical("    Please ensure Meilisearch is running and accessible.")
+        logger.critical(f"✗✗✗ CRITICAL: Could not connect to Meilisearch at {meili_url}.")
         app.state.meilisearch_client = None
-
     except Exception as e:
         logger.critical(f"✗✗✗ CRITICAL: An unexpected error occurred during Meilisearch initialization: {e}")
-        logger.critical("    The API will start in a DEGRADED state.")
         app.state.meilisearch_client = None
 
     # Initialize Safety Filter
@@ -126,22 +119,27 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Google CSE not configured, using Meilisearch only")
 
-    # Initialize Reranker (optional, requires PyTorch)
+    # Initialize Reranker (optional)
     reranking_enabled = os.getenv("RERANKING_ENABLED", "false").lower() == "true"
+    app.state.reranker = None
 
     if reranking_enabled:
         logger.info("Initializing semantic reranker...")
         try:
-            reranker_model = os.getenv("RERANKER_MODEL", "intfloat/multilingual-e5-base")
-            reranker = SentenceTransformerReranker(reranker_model)
-            reranker.initialize()
+            reranker_api_url = os.getenv("RERANKER_API_URL")
+            reranker_model = os.getenv("RERANKER_MODEL")
+            
+            reranker = HuggingFaceAPIReranker(api_url=reranker_api_url, model_name=reranker_model)
             app.state.reranker = reranker
-            logger.info("✓ Reranker initialized")
+            
+            if not reranker._initialized:
+                 logger.warning("Reranker initialization failed. Reranking will be skipped.")
+
         except Exception as e:
-            logger.warning(f"✗ Failed to initialize reranker: {e}")
-            logger.warning("Continuing without reranking")
+            logger.error(f"✗ An unexpected error occurred during reranker setup: {e}", exc_info=True)
+            logger.warning("Continuing without reranking.")
     else:
-        logger.info("Reranking disabled")
+        logger.info("Reranking is disabled by configuration.")
 
     # Initialize Stats Database
     logger.info("Initializing stats database...")
@@ -157,14 +155,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Cleanup resources
     logger.info("Shutting down KidSearch API backend...")
-    if hasattr(app.state, "meilisearch_client") and app.state.meilisearch_client:
-        # No explicit close needed for http-based client, but good practice
-        logger.info("✓ Meilisearch client does not require explicit shutdown.")
-    if hasattr(app.state, "stats_db"):
-        logger.info("✓ Stats database connection will be closed.")
-    logger.info("KidSearch API backend shut down successfully.")
 
 
 def create_app() -> FastAPI:
@@ -206,3 +197,11 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # ou "*" pour tout autoriser temporairement
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)

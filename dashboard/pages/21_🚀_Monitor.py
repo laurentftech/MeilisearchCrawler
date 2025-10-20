@@ -13,8 +13,8 @@ import requests
 # Use absolute imports from the project root
 from dashboard.src.i18n import get_translator
 from dashboard.src.meilisearch_client import get_meili_client
-from meilisearchcrawler.config import INDEX_NAME
 
+INDEX_NAME = os.getenv("INDEX_NAME", "kidsearch")
 
 # Initialize translator
 if 'lang' not in st.session_state:

@@ -6,7 +6,6 @@ import aiohttp
 import asyncio
 from bs4 import BeautifulSoup
 import time
-from meilisearch import Client
 import logging
 from urllib.parse import urljoin, urlparse
 import hashlib
@@ -25,10 +24,15 @@ from tqdm.asyncio import tqdm
 from tqdm import tqdm as tqdm_sync
 from google import genai as gemini
 import trafilatura
-from meilisearchcrawler.cache_db import CacheDB
 import certifi
 import signal
 
+# New SDK Imports
+from meilisearch_python_sdk import AsyncClient
+from meilisearch_python_sdk.errors import MeilisearchApiError, MeilisearchCommunicationError
+from meilisearch_python_sdk.models.task import TaskInfo
+
+from meilisearchcrawler.cache_db import CacheDB
 
 # ---------------------------
 # Project Structure Setup
@@ -38,7 +42,6 @@ def get_project_root():
         return os.path.dirname(sys.executable)
     else:
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
 
 PROJECT_ROOT = get_project_root()
 DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
@@ -62,8 +65,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- SSL Context Patch for urllib ---
-# RobotFileParser uses urllib, which doesn't automatically use certifi.
-# This patch ensures all urllib requests use our secure SSL context.
 try:
     import urllib.request
     ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -94,18 +95,14 @@ class Config:
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-004")
     EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", 768))
     GEMINI_EMBEDDING_BATCH_SIZE = int(os.getenv("GEMINI_EMBEDDING_BATCH_SIZE", 100))
-
-    # Protections pour environnements à ressources limitées (NAS)
-    MAX_CRAWL_DURATION = int(os.getenv('MAX_CRAWL_DURATION', 3600))  # 1 heure par défaut
-    MAX_QUEUE_SIZE = int(os.getenv('MAX_QUEUE_SIZE', 50000))  # Limite de la file d'attente
-    MAX_WORKERS = int(os.getenv('MAX_WORKERS', 20))  # Maximum absolu de workers
-
+    MAX_CRAWL_DURATION = int(os.getenv('MAX_CRAWL_DURATION', 3600))
+    MAX_QUEUE_SIZE = int(os.getenv('MAX_QUEUE_SIZE', 50000))
+    MAX_WORKERS = int(os.getenv('MAX_WORKERS', 20))
     GLOBAL_EXCLUDE_PATTERNS = [
         '/login', '/logout', '/signin', '/signup', '/register',
         '/cart', '/checkout', '/account', '/share', '/print', '/cdn-cgi/',
         '/wp-admin/', '/wp-json/', '?rest_route=',
     ]
-
 
 config = Config()
 
@@ -117,10 +114,9 @@ gemini_client = None
 use_embeddings = False
 
 # ---------------------------
-# Gestionnaire d'arrêt gracieux
+# Shutdown Handler
 # ---------------------------
 class ShutdownHandler:
-    """Gère l'arrêt gracieux du crawler en réponse aux signaux système"""
     def __init__(self):
         self.shutdown_requested = False
         signal.signal(signal.SIGINT, self._handle_signal)
@@ -139,29 +135,20 @@ shutdown_handler = ShutdownHandler()
 # ---------------------------
 # MeiliSearch & Cache Setup
 # ---------------------------
-try:
-    client = Client(config.MEILI_URL, config.MEILI_KEY)
-    client.health()
-    logger.info("✅ Connexion MeiliSearch réussie")
-except Exception as e:
-    logger.error(f"❌ Erreur connexion MeiliSearch: {e}")
-    exit(1)
-
-# Initialisation du cache SQLite
 cache_db = CacheDB()
 logger.info("✅ Cache SQLite initialisé")
 
-def update_meilisearch_settings(index, with_embeddings=False):
+async def update_meilisearch_settings(index, with_embeddings=False):
     logger.info("⚙️ Mise à jour des paramètres MeiliSearch...")
     settings = {
-        'searchableAttributes': ['title', 'excerpt', 'content', 'site', 'images.alt'],
-        'displayedAttributes': [
+        'searchable_attributes': ['title', 'excerpt', 'content', 'site', 'images.alt'],
+        'displayed_attributes': [
             'title', 'url', 'site', 'images', 'timestamp', 'excerpt',
             'content', 'lang', 'indexed_at', 'last_crawled_at', 'content_hash'
         ],
-    'filterableAttributes': ['site', 'timestamp', 'lang', 'indexed_at', 'last_crawled_at', 'title', 'content', 'embedding_provider', 'embedding_model', 'embedding_dimensions'],
-        'sortableAttributes': ['timestamp', 'indexed_at', 'last_crawled_at'],
-        'rankingRules': ['words', 'typo', 'proximity', 'attribute', 'sort', 'exactness']
+        'filterable_attributes': ['site', 'timestamp', 'lang', 'indexed_at', 'last_crawled_at', 'title', 'content', 'embedding_provider', 'embedding_model', 'embedding_dimensions'],
+        'sortable_attributes': ['timestamp', 'indexed_at', 'last_crawled_at'],
+        'ranking_rules': ['words', 'typo', 'proximity', 'attribute', 'sort', 'exactness']
     }
 
     if with_embeddings:
@@ -174,29 +161,13 @@ def update_meilisearch_settings(index, with_embeddings=False):
         }
 
     try:
-        task = index.update_settings(settings)
+        task: TaskInfo = await index.update_settings(settings)
         logger.info(f"   ✓ Paramètres mis à jour (task uid: {task.task_uid})")
     except Exception as e:
         logger.error(f"❌ Échec mise à jour paramètres: {e}")
 
-try:
-    indexes = client.get_indexes()
-    existing_indexes = [i.uid for i in indexes['results']]
-
-    if config.INDEX_NAME not in existing_indexes:
-        logger.info(f"📦 Création de l'index '{config.INDEX_NAME}'...")
-        client.create_index(config.INDEX_NAME, {'primaryKey': 'id'})
-        time.sleep(2)
-
-    index = client.index(config.INDEX_NAME)
-    logger.info(f"✅ Index '{config.INDEX_NAME}' prêt")
-
-except Exception as e:
-    logger.error(f"❌ Erreur configuration index: {e}")
-    exit(1)
-
 # ---------------------------
-# Charger sites.yml
+# Load sites.yml
 # ---------------------------
 try:
     with open(os.path.join(CONFIG_DIR, "sites.yml"), "r", encoding='utf-8') as f:
@@ -209,7 +180,6 @@ except FileNotFoundError:
 except Exception as e:
     logger.error(f"❌ Erreur lecture sites.yml: {e}")
     exit(1)
-
 
 # ---------------------------
 # Cache (via CacheDB)
@@ -232,7 +202,6 @@ def should_skip_page(url: str, content_hash: str) -> bool:
 def update_cache(url: str, content_hash: str, doc_id: str, site_name: str, etag: str = None, last_modified: str = None):
     cache_db.set(url, content_hash, doc_id, etag=etag, last_modified=last_modified, site_name=site_name)
 
-
 # ---------------------------
 # Robots.txt
 # ---------------------------
@@ -241,14 +210,11 @@ robot_parsers: Dict[str, RobotFileParser] = {}
 def get_robot_parser(url: str) -> Optional[RobotFileParser]:
     parsed_url = urlparse(url)
     domain = parsed_url.netloc
-
     if domain in robot_parsers:
         return robot_parsers[domain]
-
     robots_url = f"{parsed_url.scheme}://{domain}/robots.txt"
     parser = RobotFileParser()
     parser.set_url(robots_url)
-
     try:
         parser.read()
         robot_parsers[domain] = parser
@@ -267,17 +233,14 @@ def get_crawl_delay(url: str) -> float:
             return float(delay)
     return config.DEFAULT_DELAY
 
-
 # ---------------------------
-# Utilitaires
+# Utilities
 # ---------------------------
 def get_nested_value(data, key_path: str):
     if not isinstance(data, (dict, list)) or not key_path:
         return None
-
     keys = key_path.replace('[]', '.[]').split('.')
     current = data
-
     for i, key in enumerate(keys):
         if current is None:
             return None
@@ -293,7 +256,6 @@ def get_nested_value(data, key_path: str):
                 if res:
                     results.extend(res if isinstance(res, list) else [res])
             return results
-
         if not isinstance(current, dict):
             return None
         current = current.get(key)
@@ -349,17 +311,13 @@ def extract_main_content(soup: BeautifulSoup, html_string: str, site_config: Dic
         content_element = soup.select_one(site_selector)
         if content_element:
             return content_element.get_text(separator=' ', strip=True)
-
     extracted_text = trafilatura.extract(html_string, include_comments=False, include_tables=False)
     if extracted_text and len(extracted_text) > 250:
         return extracted_text
-
     logger.debug("   (Fallback sur l'heuristique maison)")
     best_candidate = None
     best_candidate_len = 0
-
-    for selector in ['article', 'main', '[role="main"]', '.post-content', '.entry-content', '.article-content',
-                     '.content-main', '.main-content', '#content', '.content', '.mw-parser-output']:
+    for selector in ['article', 'main', '[role="main"]', '.post-content', '.entry-content', '.article-content', '.content-main', '.main-content', '#content', '.content', '.mw-parser-output']:
         content_elem = soup.select_one(selector)
         if content_elem:
             temp_elem = BeautifulSoup(str(content_elem), 'lxml')
@@ -367,7 +325,6 @@ def extract_main_content(soup: BeautifulSoup, html_string: str, site_config: Dic
             if current_len > best_candidate_len:
                 best_candidate = content_elem
                 best_candidate_len = current_len
-
     if not best_candidate or best_candidate_len < 250:
         if soup.body:
             all_elements = soup.body.find_all(True, recursive=True)
@@ -385,11 +342,8 @@ def extract_main_content(soup: BeautifulSoup, html_string: str, site_config: Dic
             return ""
     else:
         target_element = best_candidate
-
-    for tag in target_element.select(
-            'nav, header, footer, aside, form, script, style, iframe, .sidebar, .widget, .social-share, .related-posts, .comments, .comment, .advertisement, .ad, .ads, [class*="share"], [class*="related"], [class*="sidebar"], [class*="widget"], [class*="promo"], [class*="cookie"], [aria-hidden="true"]'):
+    for tag in target_element.select('nav, header, footer, aside, form, script, style, iframe, .sidebar, .widget, .social-share, .related-posts, .comments, .comment, .advertisement, .ad, .ads, [class*="share"], [class*="related"], [class*="sidebar"], [class*="widget"], [class*="promo"], [class*="cookie"], [aria-hidden="true"]'):
         tag.decompose()
-
     return target_element.get_text(separator=' ', strip=True)
 
 def get_title(soup: BeautifulSoup) -> str:
@@ -455,83 +409,57 @@ def extract_images(soup: BeautifulSoup, base_url: str, max_images: int = 5) -> L
             seen_urls.add(full_url)
     return images
 
-
 # ---------------------------
 # Gemini Embeddings
 # ---------------------------
 def get_embeddings_batch(texts: List[str]) -> Optional[List[List[float]]]:
-    """Génère des embeddings pour plusieurs textes en une seule requête"""
     if not gemini_client:
         return None
     try:
-        result = gemini_client.models.embed_content(
-            model=config.EMBEDDING_MODEL,
-            contents=texts
-        )
+        result = gemini_client.models.embed_content(model=config.EMBEDDING_MODEL, contents=texts)
         return [embedding.values for embedding in result.embeddings]
     except Exception as e:
         logger.error(f"Erreur API Gemini: {e}")
         return None
 
-
 # ---------------------------
-# Indexation Progressive
+# Progressive Indexing
 # ---------------------------
-async def index_documents_batch(documents: List[Dict], stats=None):
-    """
-    Indexe un lot de documents dans MeiliSearch avec gestion des embeddings
-    """
+async def index_documents_batch(index, documents: List[Dict], stats=None):
     if not documents:
         return
-
     logger.info(f"📦 Indexation de {len(documents)} documents...")
-
-    # Génération des embeddings si activé
     if use_embeddings and gemini_client:
         logger.debug(f"   -> Génération de {len(documents)} embeddings...")
         all_embeddings = []
-        texts_to_embed = [
-            f"{doc.get('title', '')}\n{doc.get('content', '')}".strip()
-            for doc in documents
-        ]
-
-        # Traiter par batches Gemini
+        texts_to_embed = [f"{doc.get('title', '')}\n{doc.get('content', '')}".strip() for doc in documents]
         for i in range(0, len(texts_to_embed), config.GEMINI_EMBEDDING_BATCH_SIZE):
             batch_texts = texts_to_embed[i:i + config.GEMINI_EMBEDDING_BATCH_SIZE]
             batch_embeddings = get_embeddings_batch(batch_texts)
-
             if batch_embeddings:
                 all_embeddings.extend(batch_embeddings)
             else:
                 all_embeddings.extend([None] * len(batch_texts))
-
-        # Ajouter les embeddings aux documents avec metadata du provider
         if len(all_embeddings) == len(documents):
             provider_name = os.getenv('EMBEDDING_PROVIDER', 'gemini')
-
-            # Pour Snowflake, stocker le modèle complet
             if provider_name == 'snowflake' or provider_name == 'infloat':
                 model_name = os.getenv('EMBEDDING_MODEL', 'intfloat/multilingual-e5-base')
                 embedding_model = model_name.split('/')[-1] if '/' in model_name else model_name
             else:
                 embedding_model = provider_name
-
             for doc, embedding in zip(documents, all_embeddings):
                 if embedding:
                     doc["_vectors"] = {"default": embedding}
                     doc["embedding_provider"] = provider_name
                     doc["embedding_model"] = embedding_model
                     doc["embedding_dimensions"] = len(embedding)
-
-    # Indexation dans MeiliSearch
     try:
-        index.add_documents(documents)
+        await index.add_documents(documents)
         logger.debug(f"   ✓ {len(documents)} documents indexés")
     except Exception as e:
         logger.error(f"❌ Erreur indexation: {e}")
         if stats:
             await stats.increment('errors', len(documents))
-
 
 # ---------------------------
 # Stats
@@ -582,9 +510,7 @@ class CrawlStats:
             logger.info(f"⚡ Vitesse: {self.pages_visited / duration:.2f} pages/s")
         logger.info(f"{'=' * 60}\n")
 
-
 STATUS_FILE = os.path.join(DATA_DIR, "status.json")
-
 
 class GlobalCrawlStatus:
     def __init__(self, total_sites: int):
@@ -653,14 +579,12 @@ class GlobalCrawlStatus:
         self.active_site = None
         self.save()
 
-
 class CrawlContext:
     def __init__(self, site: Dict, force_recrawl: bool):
         self.site = site
         self.force_recrawl = force_recrawl
         self.processed_hashes: Set[str] = set()
         self.stats = CrawlStats(site['name'])
-        # Utilise le délai personnalisé du site s'il est défini, sinon le délai automatique
         custom_delay = site.get('delay')
         if custom_delay is not None:
             logger.info(f"   -> Délai personnalisé appliqué: {custom_delay}s")
@@ -668,7 +592,6 @@ class CrawlContext:
         self.exclude_patterns = config.GLOBAL_EXCLUDE_PATTERNS + site.get("exclude", [])
         self.no_index_patterns = site.get("no_index", [])
         self.max_depth = site.get("depth", 3)
-
 
 class RateLimiter:
     def __init__(self, delay: float):
@@ -684,7 +607,6 @@ class RateLimiter:
                 await asyncio.sleep(self.delay - time_since_last)
             self.last_request = time.time()
 
-
 async def fetch_page(session: ClientSession, url: str, rate_limiter: RateLimiter) -> Optional[Tuple[str, str, Dict]]:
     await rate_limiter.wait()
     headers = {}
@@ -694,7 +616,6 @@ async def fetch_page(session: ClientSession, url: str, rate_limiter: RateLimiter
             headers['If-None-Match'] = cached_data['etag']
         if cached_data.get('last_modified'):
             headers['If-Modified-Since'] = cached_data['last_modified']
-
     for attempt in range(config.MAX_RETRIES):
         try:
             async with session.get(url, headers=headers) as response:
@@ -708,8 +629,7 @@ async def fetch_page(session: ClientSession, url: str, rate_limiter: RateLimiter
                 text = await response.text()
                 etag = response.headers.get('ETag')
                 last_modified = response.headers.get('Last-Modified')
-                return (str(response.url), text,
-                        {'status': response.status, 'etag': etag, 'last_modified': last_modified})
+                return (str(response.url), text, {'status': response.status, 'etag': etag, 'last_modified': last_modified})
         except asyncio.TimeoutError:
             logger.warning(f"⏱️ Timeout {attempt + 1}/{config.MAX_RETRIES} pour {url}")
         except Exception as e:
@@ -718,33 +638,25 @@ async def fetch_page(session: ClientSession, url: str, rate_limiter: RateLimiter
             await asyncio.sleep(2 ** attempt)
     return None
 
-
-async def process_page(session: ClientSession, url: str, context: CrawlContext, current_depth: int = 0) -> Tuple[
-    Optional[Dict], List[Tuple[str, int]]]:
+async def process_page(session: ClientSession, url: str, context: CrawlContext, current_depth: int = 0) -> Tuple[Optional[Dict], List[Tuple[str, int]]]:
     result = await fetch_page(session, url, context.rate_limiter)
     if not result:
         await context.stats.increment('errors')
         return None, []
-
     final_url, html, metadata = result
-
     if metadata['status'] == 304:
         await context.stats.increment('pages_not_modified')
         await context.stats.increment('pages_visited')
         doc_id = generate_doc_id(final_url)
         refresh_doc = {"id": doc_id, "last_crawled_at": datetime.now().isoformat()}
         return refresh_doc, []
-
     if metadata['status'] == 'skipped_content_type':
         await context.stats.increment('pages_visited')
         await context.stats.increment('pages_not_indexed')
         return None, []
-
     await context.stats.increment('pages_visited')
-
     if final_url != url:
         logger.debug(f"   ↪️ Redirection de {url} vers {final_url}")
-
     try:
         soup = BeautifulSoup(html, "lxml")
         title = get_title(soup)
@@ -752,26 +664,20 @@ async def process_page(session: ClientSession, url: str, context: CrawlContext, 
         content = clean_text(raw_content)
         excerpt = create_excerpt(content, max_length=250)
         images = extract_images(soup, final_url)
-
         content_hash = get_content_hash(content, title, images, excerpt)
         doc_id = generate_doc_id(final_url)
-
         is_no_index_page = is_excluded(final_url, context.no_index_patterns)
         is_duplicate_content = content_hash in context.processed_hashes
         is_skipped_by_cache = not context.force_recrawl and should_skip_page(final_url, content_hash)
         should_index = not is_no_index_page and not is_skipped_by_cache and not is_duplicate_content
-
         doc = None
         if should_index and len(content) >= 50:
             context.processed_hashes.add(content_hash)
-
             lang = "fr"
             html_tag = soup.find('html')
             if html_tag and html_tag.get('lang'):
                 lang = html_tag.get('lang').split('-')[0].lower()
-
             now_iso = datetime.now().isoformat()
-
             doc = {
                 "id": doc_id,
                 "site": context.site["name"],
@@ -786,13 +692,11 @@ async def process_page(session: ClientSession, url: str, context: CrawlContext, 
                 "last_crawled_at": now_iso,
                 "content_hash": content_hash,
             }
-            update_cache(final_url, content_hash, doc_id, context.site["name"], metadata['etag'],
-                         metadata['last_modified'])
+            update_cache(final_url, content_hash, doc_id, context.site["name"], metadata['etag'], metadata['last_modified'])
         elif is_skipped_by_cache:
             await context.stats.increment('pages_skipped_cache')
         else:
             await context.stats.increment('pages_not_indexed')
-
         new_links = []
         if current_depth < context.max_depth:
             for link in soup.find_all("a", href=True):
@@ -801,80 +705,52 @@ async def process_page(session: ClientSession, url: str, context: CrawlContext, 
                     full_url = normalize_url(urljoin(final_url, href))
                     if is_valid_url(full_url) and is_same_domain(full_url, context.site["crawl"]):
                         new_links.append((full_url, current_depth + 1))
-
         return doc, new_links
-
     except Exception as e:
         logger.error(f"❌ Erreur traitement {url}: {e}")
         await context.stats.increment('errors')
         return None, []
 
-
-async def crawl_site_html_async(context: CrawlContext):
+async def crawl_site_html_async(context: CrawlContext, index):
     base_url = context.site["crawl"].replace("*", "")
     max_pages = context.site.get("max_pages", 0)
-
     logger.info(f"🚀 Démarrage crawl async '{context.site['name']}' -> {base_url}")
-    logger.info(
-        f"   Paramètres: max={max_pages}, depth={context.max_depth}, delay={context.rate_limiter.delay:.2f}s, workers={config.CONCURRENT_REQUESTS}")
+    logger.info(f"   Paramètres: max={max_pages}, depth={context.max_depth}, delay={context.rate_limiter.delay:.2f}s, workers={config.CONCURRENT_REQUESTS}")
     logger.info(f"   📦 Indexation progressive par lots de {config.INDEXING_BATCH_SIZE}")
-
-    # Protections contre boucles infinies et saturation ressources
     crawl_start_time = time.time()
     logger.info(f"   ⏱️  Timeout maximum: {config.MAX_CRAWL_DURATION}s ({config.MAX_CRAWL_DURATION/60:.1f} min)")
     logger.info(f"   🧠 Limite file d'attente: {config.MAX_QUEUE_SIZE} URLs")
-
     documents_buffer = []
-
     session_data = cache_db.get_session(context.site['name'])
     resume_urls = session_data.get('resume_urls') if session_data and not session_data.get('completed') else None
-
     if resume_urls and not context.force_recrawl:
         logger.info(f"🔄 Reprise du crawl depuis {len(resume_urls)} URLs précédemment découvertes.")
         to_visit = {(url, 0) for url in resume_urls}
     else:
         to_visit = {(normalize_url(base_url), 0)}
-
     visited: Set[str] = set()
     in_progress: Set[str] = set()
-
     timeout = ClientTimeout(total=config.TIMEOUT)
-    # Création d'un contexte SSL sécurisé qui utilise les certificats de `certifi`
     ssl_context = ssl.create_default_context(cafile=certifi.where())
     connector = TCPConnector(limit=config.MAX_CONNECTIONS, limit_per_host=config.CONCURRENT_REQUESTS, ssl=ssl_context)
-
     headers = {
         'User-Agent': config.USER_AGENT,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
     }
-
-    context.stats.pbar = tqdm(
-        total=max_pages if max_pages > 0 else None,
-        desc=f"🔍 {context.site['name']}",
-        unit="pages",
-        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
-    )
-
+    context.stats.pbar = tqdm(total=max_pages if max_pages > 0 else None, desc=f"🔍 {context.site['name']}", unit="pages", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
     async with ClientSession(timeout=timeout, connector=connector, headers=headers) as session:
         while to_visit or in_progress:
-            # Protection 1: Vérification timeout global
             elapsed_time = time.time() - crawl_start_time
             if elapsed_time > config.MAX_CRAWL_DURATION:
                 logger.warning(f"⏱️  Timeout atteint ({elapsed_time/60:.1f} min) - arrêt du crawl")
                 break
-
-            # Protection 2: Vérification arrêt gracieux (SIGTERM/SIGINT)
             if shutdown_handler.should_stop():
                 logger.warning("⚠️  Arrêt gracieux demandé - sauvegarde en cours...")
                 break
-
-            # Protection 3: Vérification limite mémoire (taille de la queue)
             if len(to_visit) > config.MAX_QUEUE_SIZE:
                 logger.warning(f"🧠 Limite de queue atteinte ({len(to_visit)} URLs) - arrêt temporaire")
                 break
-
-            # Protection 4: Vérification max_pages
             if max_pages > 0 and context.stats.pages_visited >= max_pages:
                 break
             batch = []
@@ -882,136 +758,97 @@ async def crawl_site_html_async(context: CrawlContext):
                 if max_pages > 0 and context.stats.pages_visited + len(in_progress) >= max_pages:
                     break
                 url, depth = to_visit.pop()
-
                 if url in visited or url in in_progress:
                     continue
                 if is_excluded(url, context.exclude_patterns):
                     continue
-
-                ignored_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.pdf', '.zip', '.rar', '.mp3',
-                                      '.mp4', '.avi')
+                ignored_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.pdf', '.zip', '.rar', '.mp3', '.mp4', '.avi')
                 if url.lower().endswith(ignored_extensions):
                     logger.debug(f"   ↪️ Ignoré (extension de fichier): {url}")
                     visited.add(url)
                     continue
-
                 robot_parser = get_robot_parser(url)
                 if robot_parser and not robot_parser.can_fetch(config.USER_AGENT, url):
                     continue
-
                 batch.append((url, depth))
                 in_progress.add(url)
-
             if not batch:
                 if in_progress:
                     await asyncio.sleep(0.1)
                 continue
-
             tasks = [process_page(session, url, context, depth) for url, depth in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-
             for (url, depth), result in zip(batch, results):
                 visited.add(url)
                 in_progress.discard(url)
-
                 if isinstance(result, Exception):
                     logger.error(f"❌ Exception pour {url}: {result}")
                     await context.stats.increment('errors')
                     continue
-
                 doc, new_links = result
-
                 if doc:
                     documents_buffer.append(doc)
-
                     if len(documents_buffer) >= config.INDEXING_BATCH_SIZE:
-                        await index_documents_batch(documents_buffer, context.stats)
+                        await index_documents_batch(index, documents_buffer, context.stats)
                         await context.stats.increment('pages_indexed', len(documents_buffer))
                         documents_buffer.clear()
-
                 for link_url, link_depth in new_links:
                     if link_url not in visited and link_url not in in_progress:
                         to_visit.add((link_url, link_depth))
-
     context.stats.pbar.close()
     context.stats.discovered_but_not_visited = len(to_visit)
-
     if documents_buffer:
         logger.info(f"📦 Indexation des {len(documents_buffer)} documents restants...")
-        await index_documents_batch(documents_buffer, context.stats)
+        await index_documents_batch(index, documents_buffer, context.stats)
         await context.stats.increment('pages_indexed', len(documents_buffer))
         documents_buffer.clear()
-
     if len(to_visit) > 0 and (max_pages > 0 and context.stats.pages_visited >= max_pages):
         logger.info(f"📝 Sauvegarde de {len(to_visit)} URLs pour une reprise future.")
         resume_urls_set = {url for url, depth in to_visit}
         complete_crawl_session(context.site['name'], completed=False, resume_urls=resume_urls_set)
 
-
-async def crawl_json_api_async(context: CrawlContext):
+async def crawl_json_api_async(context: CrawlContext, index):
     base_url = context.site["crawl"]
     json_config = context.site["json"]
-
     logger.info(f"🚀 Démarrage crawl JSON '{context.site['name']}' -> {base_url}")
     logger.info(f"   📦 Indexation progressive par lots de {config.INDEXING_BATCH_SIZE}")
-
     documents_buffer = []
-
     headers = {
         'User-Agent': config.USER_AGENT,
         'Accept': 'application/json',
         **context.site.get('headers', {})
     }
-
-    await context.rate_limiter.wait() # Appliquer le délai avant la première requête
-
+    await context.rate_limiter.wait()
     try:
-        # Correction: Utiliser le contexte SSL sécurisé
         ssl_context = ssl.create_default_context(cafile=certifi.where())
         async with aiohttp.ClientSession(headers=headers, timeout=ClientTimeout(total=config.TIMEOUT), connector=TCPConnector(ssl=ssl_context)) as session:
             async with session.get(base_url) as response:
                 response.raise_for_status()
                 data = await response.json()
-
         items = get_nested_value(data, json_config['root'])
-
         if not items:
             logger.error(f"❌ Élément racine '{json_config['root']}' introuvable")
             return
-
         logger.info(f"📦 {len(items)} éléments trouvés")
-
-        context.stats.pbar = tqdm_sync(
-            total=len(items),
-            desc=f"🔍 {context.site['name']}",
-            unit="items",
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
-        )
-
+        context.stats.pbar = tqdm_sync(total=len(items), desc=f"🔍 {context.site['name']}", unit="items", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
         for item in items:
             try:
                 url_template = json_config['url']
                 url = url_template
                 template_keys = re.findall(r"\{\{(.*?)\}\}", url_template)
-
                 for t_key in template_keys:
                     value = get_nested_value(item, t_key.strip())
                     if value:
                         url = url.replace(f"{{{{{t_key}}}}}", str(value))
-
                 if not url or "{{" in url or not is_valid_url(url):
                     context.stats.pbar.update(1)
                     continue
-
                 if is_excluded(url, context.exclude_patterns):
                     context.stats.pbar.update(1)
                     continue
-
                 await context.stats.increment('pages_visited')
-
                 title = str(get_nested_value(item, json_config['title']) or "Sans titre")
                 doc_id = generate_doc_id(url)
-
                 image_template = json_config.get('image', '')
                 image_url = None
                 if image_template:
@@ -1023,9 +860,7 @@ async def crawl_json_api_async(context: CrawlContext):
                             image_url = image_url.replace(f"{{{{{t_key}}}}}", str(value))
                     if "{{" in image_url:
                         image_url = None
-
                 images = [{'url': image_url, 'alt': title, 'description': title}] if image_url else []
-
                 content_parts = []
                 for content_key in json_config.get('content', '').split(','):
                     if not content_key.strip():
@@ -1035,16 +870,12 @@ async def crawl_json_api_async(context: CrawlContext):
                         content_parts.extend(map(str, value))
                     elif value:
                         content_parts.append(str(value))
-
                 content = ' '.join(content_parts)
                 excerpt = create_excerpt(content)
-
                 content_hash = get_content_hash(content, title, images, excerpt)
                 should_index = context.force_recrawl or not should_skip_page(url, content_hash)
-
                 if should_index:
                     now_iso = datetime.now().isoformat()
-
                     doc = {
                         "id": doc_id,
                         "site": context.site["name"],
@@ -1061,90 +892,63 @@ async def crawl_json_api_async(context: CrawlContext):
                     }
                     documents_buffer.append(doc)
                     update_cache(url, content_hash, doc_id, context.site["name"])
-
                     if len(documents_buffer) >= config.INDEXING_BATCH_SIZE:
-                        await index_documents_batch(documents_buffer, context.stats)
+                        await index_documents_batch(index, documents_buffer, context.stats)
                         await context.stats.increment('pages_indexed', len(documents_buffer))
                         documents_buffer.clear()
                 else:
                     await context.stats.increment('pages_not_indexed')
-
                 context.stats.pbar.update(1)
-                context.stats.pbar.set_postfix({
-                    'indexées': context.stats.pages_indexed,
-                    'non-indexées': context.stats.pages_not_indexed,
-                    'erreurs': context.stats.errors
-                })
-
+                context.stats.pbar.set_postfix({'indexées': context.stats.pages_indexed, 'non-indexées': context.stats.pages_not_indexed, 'erreurs': context.stats.errors})
             except Exception as e:
                 logger.error(f"❌ Erreur traitement item JSON: {e}")
                 await context.stats.increment('errors')
                 context.stats.pbar.update(1)
-
         context.stats.pbar.close()
-
         if documents_buffer:
             logger.info(f"📦 Indexation des {len(documents_buffer)} documents restants...")
-            await index_documents_batch(documents_buffer, context.stats)
+            await index_documents_batch(index, documents_buffer, context.stats)
             await context.stats.increment('pages_indexed', len(documents_buffer))
             documents_buffer.clear()
-
     except Exception as e:
         logger.error(f"❌ Erreur traitement JSON pour {context.site['name']}: {e}")
         await context.stats.increment('errors')
 
-
-async def crawl_mediawiki_async(context: CrawlContext):
-    """Point d'entrée pour crawler MediaWiki avec indexation progressive"""
+async def crawl_mediawiki_async(context: CrawlContext, index):
     from meilisearchcrawler.mediawiki_crawler import MediaWikiCrawler
-
     crawler = MediaWikiCrawler(context)
-
-    await crawler.crawl_and_index_progressive(
-        meilisearch_index=index,
-        use_embeddings=use_embeddings,
-        indexing_batch_size=config.INDEXING_BATCH_SIZE
-    )
-
+    await crawler.crawl_and_index_progressive(meilisearch_index=index, use_embeddings=use_embeddings, indexing_batch_size=config.INDEXING_BATCH_SIZE)
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='KidSearch Crawler',
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description='KidSearch Crawler', formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--force', action='store_true', help='Force le re-crawl complet')
     parser.add_argument('--site', type=str, help='Crawl un site spécifique')
     parser.add_argument('--verbose', action='store_true', help='Mode verbose')
     parser.add_argument('--clear-cache', action='store_true', help='Efface le cache')
     parser.add_argument('--stats-only', action='store_true', help='Affiche les stats du cache')
-    parser.add_argument('--workers', type=int, default=config.CONCURRENT_REQUESTS,
-                        help=f'Nombre de workers (défaut: {config.CONCURRENT_REQUESTS})')
+    parser.add_argument('--workers', type=int, default=config.CONCURRENT_REQUESTS, help=f'Nombre de workers (défaut: {config.CONCURRENT_REQUESTS})')
     parser.add_argument('--embeddings', action='store_true', help='Active la génération d\'embeddings avec Gemini')
     return parser.parse_args()
-
 
 def show_cache_stats():
     stats = cache_db.get_stats()
     if not stats or stats['total_urls'] == 0:
         logger.info("💾 Le cache est vide")
         return
-
     logger.info(f"\n{'=' * 60}")
     logger.info("📊 Statistiques du cache (SQLite)")
     logger.info(f"{'=' * 60}")
     logger.info(f"📄 Total d'URLs en cache: {stats['total_urls']}")
-
     if stats.get('sites'):
         logger.info(f"\n🌐 Répartition par site:")
         for site, count in sorted(stats['sites'].items(), key=lambda x: x[1], reverse=True):
             logger.info(f"   • {site}: {count} pages")
-
     if stats.get('oldest_crawl') and stats.get('newest_crawl'):
         oldest_date = datetime.fromtimestamp(stats['oldest_crawl']).strftime('%Y-%m-%d %H:%M:%S')
         newest_date = datetime.fromtimestamp(stats['newest_crawl']).strftime('%Y-%m-%d %H:%M:%S')
         logger.info(f"\n⏰ Premier crawl: {oldest_date}")
         logger.info(f"⏰ Dernier crawl: {newest_date}")
-
     logger.info(f"{'=' * 60}\n")
-
 
 def clear_cache():
     logger.info("🗑️  Effacement du cache SQLite...")
@@ -1154,11 +958,9 @@ def clear_cache():
     except Exception as e:
         logger.error(f"❌ Erreur lors de l'effacement du cache: {e}")
 
-
 async def main_async():
     args = parse_arguments()
     global use_embeddings, gemini_client
-
     if args.embeddings:
         if config.GEMINI_API_KEY:
             logger.info("✨ Activation de la génération d'embeddings avec Google Gemini")
@@ -1169,101 +971,94 @@ async def main_async():
                 logger.error(f"❌ Erreur de configuration de l'API Gemini: {e}")
                 use_embeddings = False
         else:
-            logger.warning(
-                "⚠️  L'option --embeddings est activée mais GEMINI_API_KEY n'est pas définie. Embeddings désactivés.")
-
+            logger.warning("⚠️  L'option --embeddings est activée mais GEMINI_API_KEY n'est pas définie. Embeddings désactivés.")
     if args.verbose:
         logger.setLevel(logging.DEBUG)
-
     if args.stats_only:
         show_cache_stats()
         return
-
     if args.clear_cache:
         clear_cache()
-
-    update_meilisearch_settings(index, with_embeddings=use_embeddings)
-
-    # Validation et limitation du nombre de workers
-    if args.workers:
-        if args.workers > config.MAX_WORKERS:
-            logger.warning(f"⚠️  Nombre de workers limité de {args.workers} à {config.MAX_WORKERS} (MAX_WORKERS)")
-            logger.warning(f"    Pour augmenter cette limite, définissez MAX_WORKERS dans .env")
-            config.CONCURRENT_REQUESTS = config.MAX_WORKERS
-        else:
-            config.CONCURRENT_REQUESTS = args.workers
-
-    sites_to_crawl = sites
-    if args.site:
-        sites_to_crawl = [s for s in sites if s['name'].lower() == args.site.lower()]
-        if not sites_to_crawl:
-            logger.error(f"❌ Site '{args.site}' introuvable dans sites.yml")
-            logger.info("Sites disponibles:")
-            for s in sites:
-                logger.info(f"   • {s['name']}")
-            return
-
-    global_status = GlobalCrawlStatus(total_sites=len(sites_to_crawl))
-
-    try:
-        global_status.start()
-        logger.info(f"\n{'=' * 60}")
-        logger.info(f"🚀 KidSearch Crawler")
-        logger.info(f"{'=' * 60}")
-        logger.info(f"📋 {len(sites_to_crawl)} site(s) à crawler")
-        logger.info(f"🔄 Mode: {'FORCE RECRAWL' if args.force else 'INCREMENTAL'}")
-        logger.info(f"⚡ Workers: {config.CONCURRENT_REQUESTS} requêtes parallèles")
-        logger.info(f"📦 Indexation: par lots de {config.INDEXING_BATCH_SIZE} documents")
-        if use_embeddings:
-            logger.info(f"✨ Embeddings: Activés (modèle: {config.EMBEDDING_MODEL})")
-        logger.info(f"{'=' * 60}\n")
-
-        for i, site in enumerate(sites_to_crawl, 1):
-            global_status.start_site(site['name'])
-            logger.info(f"\n{'=' * 60}")
-            logger.info(f"🌐 [{i}/{len(sites_to_crawl)}] {site['name']}")
-            logger.info(f"    Type: {site.get('type', 'html').upper()}")
-            logger.info(f"{'=' * 60}")
-
-            context = CrawlContext(site, args.force)
-            start_crawl_session(site['name'], urlparse(site['crawl']).netloc)
-
-            completed_successfully = False
-            try:
-                site_type = site.get('type', 'html')
-
-                if site_type == 'mediawiki':
-                    await crawl_mediawiki_async(context)
-                elif site_type == 'json':
-                    await crawl_json_api_async(context)
+    
+    async with AsyncClient(config.MEILI_URL, config.MEILI_KEY) as client:
+        try:
+            await client.health()
+            logger.info("✅ Connexion MeiliSearch réussie")
+            indexes = await client.get_indexes()
+            if config.INDEX_NAME not in [i.uid for i in indexes.results]:
+                logger.info(f"📦 Création de l'index '{config.INDEX_NAME}'...")
+                await client.create_index(config.INDEX_NAME, primary_key='id')
+                await asyncio.sleep(2)
+            index = await client.get_index(config.INDEX_NAME)
+            logger.info(f"✅ Index '{config.INDEX_NAME}' prêt")
+            await update_meilisearch_settings(index, with_embeddings=use_embeddings)
+            if args.workers:
+                if args.workers > config.MAX_WORKERS:
+                    logger.warning(f"⚠️  Nombre de workers limité de {args.workers} à {config.MAX_WORKERS} (MAX_WORKERS)")
+                    logger.warning(f"    Pour augmenter cette limite, définissez MAX_WORKERS dans .env")
+                    config.CONCURRENT_REQUESTS = config.MAX_WORKERS
                 else:
-                    await crawl_site_html_async(context)
-
-                completed_successfully = True
-            except KeyboardInterrupt:
-                logger.warning("\n⚠️  Interruption par l'utilisateur")
-                break
-            except Exception as e:
-                logger.error(f"❌ Erreur critique lors du crawl de {site['name']}: {e}", exc_info=args.verbose)
-            finally:
-                complete_crawl_session(site['name'], completed=completed_successfully)
-                context.stats.log_summary()
-                global_status.finish_site(context.stats)
-
-            if completed_successfully and i < len(sites_to_crawl):
-                logger.info("⏸️  Pause de 5 secondes avant le prochain site...\n")
-                await asyncio.sleep(5)
-
-    finally:
-        total_duration = time.time() - (global_status.start_time or time.time())
-        global_status.stop()
-        logger.info(f"\n{'=' * 60}")
-        logger.info(f"🎉 Crawl terminé !")
-        logger.info(f"{'=' * 60}")
-        logger.info(f"⏱️  Durée totale: {total_duration / 60:.2f} minutes")
-        logger.info(f"{'=' * 60}\n")
-        show_cache_stats()
-
+                    config.CONCURRENT_REQUESTS = args.workers
+            sites_to_crawl = sites
+            if args.site:
+                sites_to_crawl = [s for s in sites if s['name'].lower() == args.site.lower()]
+                if not sites_to_crawl:
+                    logger.error(f"❌ Site '{args.site}' introuvable dans sites.yml")
+                    logger.info("Sites disponibles:")
+                    for s in sites:
+                        logger.info(f"   • {s['name']}")
+                    return
+            global_status = GlobalCrawlStatus(total_sites=len(sites_to_crawl))
+            global_status.start()
+            logger.info(f"\n{'=' * 60}")
+            logger.info(f"🚀 KidSearch Crawler")
+            logger.info(f"{'=' * 60}")
+            logger.info(f"📋 {len(sites_to_crawl)} site(s) à crawler")
+            logger.info(f"🔄 Mode: {'FORCE RECRAWL' if args.force else 'INCREMENTAL'}")
+            logger.info(f"⚡ Workers: {config.CONCURRENT_REQUESTS} requêtes parallèles")
+            logger.info(f"📦 Indexation: par lots de {config.INDEXING_BATCH_SIZE} documents")
+            if use_embeddings:
+                logger.info(f"✨ Embeddings: Activés (modèle: {config.EMBEDDING_MODEL})")
+            logger.info(f"{'=' * 60}\n")
+            for i, site in enumerate(sites_to_crawl, 1):
+                global_status.start_site(site['name'])
+                logger.info(f"\n{'=' * 60}")
+                logger.info(f"🌐 [{i}/{len(sites_to_crawl)}] {site['name']}")
+                logger.info(f"    Type: {site.get('type', 'html').upper()}")
+                logger.info(f"{'=' * 60}")
+                context = CrawlContext(site, args.force)
+                start_crawl_session(site['name'], urlparse(site['crawl']).netloc)
+                completed_successfully = False
+                try:
+                    site_type = site.get('type', 'html')
+                    if site_type == 'mediawiki':
+                        await crawl_mediawiki_async(context, index)
+                    elif site_type == 'json':
+                        await crawl_json_api_async(context, index)
+                    else:
+                        await crawl_site_html_async(context, index)
+                    completed_successfully = True
+                except KeyboardInterrupt:
+                    logger.warning("\n⚠️  Interruption par l'utilisateur")
+                    break
+                except Exception as e:
+                    logger.error(f"❌ Erreur critique lors du crawl de {site['name']}: {e}", exc_info=args.verbose)
+                finally:
+                    complete_crawl_session(site['name'], completed=completed_successfully)
+                    context.stats.log_summary()
+                    global_status.finish_site(context.stats)
+                if completed_successfully and i < len(sites_to_crawl):
+                    logger.info("⏸️  Pause de 5 secondes avant le prochain site...\n")
+                    await asyncio.sleep(5)
+        finally:
+            total_duration = time.time() - (global_status.start_time or time.time())
+            global_status.stop()
+            logger.info(f"\n{'=' * 60}")
+            logger.info(f"🎉 Crawl terminé !")
+            logger.info(f"{'=' * 60}")
+            logger.info(f"⏱️  Durée totale: {total_duration / 60:.2f} minutes")
+            logger.info(f"{'=' * 60}\n")
+            show_cache_stats()
 
 def main():
     try:
@@ -1272,7 +1067,6 @@ def main():
         logger.warning("\n\n⚠️  Arrêt du crawler par l'utilisateur")
     except Exception as e:
         logger.error(f"\n\n❌ Erreur fatale: {e}", exc_info=True)
-
 
 if __name__ == "__main__":
     main()

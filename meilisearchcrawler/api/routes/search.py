@@ -8,7 +8,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Query, HTTPException, status, Request
-from meilisearch.errors import MeilisearchApiError, MeilisearchCommunicationError
+from meilisearch_python_sdk.errors import MeilisearchApiError, MeilisearchCommunicationError
 
 from ..models import (
     SearchRequest,

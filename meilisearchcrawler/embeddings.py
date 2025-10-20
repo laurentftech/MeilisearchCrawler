@@ -2,11 +2,8 @@ from abc import ABC, abstractmethod
 from typing import List, Optional
 import logging
 import os
+import requests
 
-# Forcer l'utilisation du CPU avant tous les imports
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-os.environ["FORCE_CUDA"] = "0"
-os.environ["FORCE_CPU"] = "1"
 
 logger = logging.getLogger(__name__)
 
@@ -20,21 +17,21 @@ class EmbeddingProvider(ABC):
 
     @abstractmethod
     def encode(self, texts: List[str]) -> List[List[float]]:
-        """"Génère des embeddings pour une liste de textes"""
+        """Génère des embeddings pour une liste de textes"""
         pass
 
     @abstractmethod
     def get_embedding_dim(self) -> int:
-        """"Retourne la dimension des embeddings"""
+        """Retourne la dimension des embeddings"""
 
     @abstractmethod
     def get_provider_name(self) -> str:
-        """"Retourne le nom générique du provider (ex: 'gemini')."""
+        """Retourne le nom générique du provider (ex: 'gemini')."""
         pass
 
     @abstractmethod
     def get_model_name(self) -> str:
-        """"Retourne le nom spécifique du modèle (ex: 'intfloat/multilingual-e5-base')."""
+        """Retourne le nom spécifique du modèle (ex: 'intfloat/multilingual-e5-base')."""
         pass
 
 
@@ -55,7 +52,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             raise RuntimeError(f"Impossible d'initialiser Gemini: {e}")
 
     def encode(self, texts: List[str]) -> List[List[float]]:
-        """"Génère des embeddings avec Gemini"""
+        """Génère des embeddings avec Gemini"""
         try:
             result = self.client.models.embed_content(
                 model=self.model_name,
@@ -79,59 +76,73 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         return self.model_name
 
 
-class SentenceTransformerEmbeddingProvider(EmbeddingProvider):
-    """"Provider utilisant Sentence Transformers (local)"""
+class HuggingFaceInferenceAPIEmbeddingProvider(EmbeddingProvider):
+    """Provider utilisant une API d'inférence Hugging Face (comme text-embeddings-inference)"""
 
-    # Dimensions selon les modèles courants
     MODEL_DIMENSIONS = {
         'intfloat/multilingual-e5-base': 768,
         'Snowflake/snowflake-arctic-embed-xs': 384,
         'Snowflake/snowflake-arctic-embed-s': 384,
         'Snowflake/snowflake-arctic-embed-m': 768,
-        'intfloat/multilingual-e5-base': 768,
         'Snowflake/snowflake-arctic-embed-l': 1024,
     }
 
-    def __init__(self, model_name: str = "intfloat/multilingual-e5-base"):
+    def __init__(self, model_name: str = "intfloat/multilingual-e5-base", api_url: str = "http://localhost:8080/embed"):
         super().__init__(model_name)
-        self.embedding_dim = self.MODEL_DIMENSIONS.get(model_name, 768) # Default to 768 for e5-base
+        self.api_url = api_url
+        self.embedding_dim = self.MODEL_DIMENSIONS.get(model_name, 768)
 
         try:
-            # Import torch et forcer CPU explicitement
-            import torch
-            torch.set_num_threads(1)
-
-            # Vérifier qu'on n'utilise pas CUDA
-            if torch.cuda.is_available():
-                logger.warning("CUDA is available but will be IGNORED - forcing CPU")
-
-            from sentence_transformers import SentenceTransformer
-            logger.info(f"📦 Chargement du modèle Sentence Transformer: {model_name}...")
-            self.model = SentenceTransformer(model_name, trust_remote_code=True, device="cpu")
-            logger.info(f"✓ Sentence Transformer initialisé ({self.embedding_dim}D) sur CPU")
+            import requests
         except ImportError:
-            raise ImportError("Le package 'sentence-transformers' est requis. Installez-le avec: pip install sentence-transformers")
+            raise ImportError("Le package 'requests' est requis. Installez-le avec: pip install requests")
+
+        logger.info(f"✓ HuggingFace Inference API provider initialisé pour le modèle {model_name} sur {self.api_url}")
+        # Test connection
+        try:
+            # remove /embed from url to get /info
+            base_url = self.api_url.rsplit('/', 1)[0]
+            response = requests.get(f"{base_url}/info")
+            response.raise_for_status()
+            info = response.json()
+            logger.info(f"✓ Connexion à l'API d'inférence réussie: version {info.get('version')}, modèle {info.get('model_id')}")
+            # Override model_name and embedding_dim with info from API if they don't match
+            if self.model_name != info.get('model_id'):
+                logger.warning(f"Le modèle configuré ({self.model_name}) est différent de celui de l'API ({info.get('model_id')}). Utilisation du modèle de l'API.")
+                self.model_name = info.get('model_id')
+            if self.embedding_dim != info.get('dim'):
+                logger.warning(f"La dimension configurée ({self.embedding_dim}) est différente de celle de l'API ({info.get('dim')}). Utilisation de la dimension de l'API.")
+                self.embedding_dim = info.get('dim')
+
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Impossible de se connecter à l'API d'inférence Hugging Face sur {self.api_url}: {e}")
         except Exception as e:
-            raise RuntimeError(f"Impossible de charger le modèle Sentence Transformer {model_name}: {e}")
+            logger.warning(f"Impossible de vérifier les informations de l'API d'inférence: {e}")
+
 
     def encode(self, texts: List[str]) -> List[List[float]]:
-        """"Génère des embeddings avec Sentence Transformer"""
+        """Génère des embeddings avec l'API d'inférence Hugging Face"""
         try:
-            embeddings = self.model.encode(
-                texts,
-                show_progress_bar=False,
-                convert_to_numpy=True
+            response = requests.post(
+                self.api_url,
+                json={"inputs": texts, "normalize": True, "truncate": True},
+                headers={"Content-Type": "application/json"}
             )
-            return embeddings.tolist()
+            response.raise_for_status()
+            embeddings = response.json()
+            return embeddings
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Erreur API Hugging Face: {e}")
+            return [[] for _ in texts]
         except Exception as e:
-            logger.error(f"❌ Erreur Sentence Transformer encoding: {e}")
+            logger.error(f"❌ Erreur lors de l'encodage avec l'API Hugging Face: {e}")
             return [[] for _ in texts]
 
     def get_embedding_dim(self) -> int:
         return self.embedding_dim
 
     def get_provider_name(self) -> str:
-        return "sentence_transformer"
+        return "huggingface"
 
     def get_model_name(self) -> str:
         return self.model_name
@@ -145,7 +156,7 @@ class NoEmbeddingProvider(EmbeddingProvider):
         self.embedding_dim = 0
 
     def encode(self, texts: List[str]) -> List[List[float]]:
-        """"Retourne des embeddings vides"""
+        """Retourne des embeddings vides"""
         return [[] for _ in texts]
 
     def get_embedding_dim(self) -> int:
@@ -163,7 +174,7 @@ def create_embedding_provider(provider_name: Optional[str] = None) -> EmbeddingP
     Factory pour créer un provider d'embeddings basé sur la configuration
 
     Args:\
-        provider_name: Nom du provider ('gemini', 'sentence_transformer', 'none')
+        provider_name: Nom du provider ('gemini', 'huggingface', 'none')
                       Si None, lit depuis EMBEDDING_PROVIDER dans .env
 
     Returns:
@@ -189,13 +200,14 @@ def create_embedding_provider(provider_name: Optional[str] = None) -> EmbeddingP
             logger.warning("   Basculement vers mode sans embeddings")
             return NoEmbeddingProvider()
 
-    elif provider_name == 'sentence_transformer':
-        model_name = os.getenv('SENTENCE_TRANSFORMER_MODEL', 'intfloat/multilingual-e5-base')
+    elif provider_name == 'huggingface':
+        model_name = os.getenv('HUGGINGFACE_MODEL', 'intfloat/multilingual-e5-base')
+        api_url = os.getenv('HUGGINGFACE_API_URL', 'http://localhost:8080/embed')
 
         try:
-            return SentenceTransformerEmbeddingProvider(model_name=model_name)
+            return HuggingFaceInferenceAPIEmbeddingProvider(model_name=model_name, api_url=api_url)
         except Exception as e:
-            logger.error(f"❌ Échec initialisation Sentence Transformer: {e}")
+            logger.error(f"❌ Échec initialisation HuggingFace Inference API: {e}")
             logger.warning("   Basculement vers mode sans embeddings")
             return NoEmbeddingProvider()
 
@@ -205,5 +217,5 @@ def create_embedding_provider(provider_name: Optional[str] = None) -> EmbeddingP
 
     else:
         logger.warning(f"⚠️  Provider inconnu '{provider_name}' - embeddings désactivés")
-        logger.info("   Providers disponibles: gemini, sentence_transformer, none")
+        logger.info("   Providers disponibles: gemini, huggingface, none")
         return NoEmbeddingProvider()

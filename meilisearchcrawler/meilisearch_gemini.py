@@ -10,7 +10,7 @@ import logging
 import time
 from typing import List
 from pathlib import Path
-import meilisearch
+from meilisearch_python_sdk import Client
 from google import genai
 from dotenv import load_dotenv
 from tqdm import tqdm

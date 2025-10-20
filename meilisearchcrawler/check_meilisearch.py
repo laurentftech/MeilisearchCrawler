@@ -2,8 +2,8 @@ import os
 import sys
 import requests
 from dotenv import load_dotenv
-import meilisearch
-from meilisearch.errors import MeilisearchApiError, MeilisearchTimeoutError
+from meilisearch_python_sdk import Client
+from meilisearch_python_sdk.errors import MeilisearchApiError, MeilisearchTimeoutError
 
 # --- Chargement de la configuration ---
 print("⚙️  Chargement de la configuration...")
@@ -15,8 +15,8 @@ INDEX_NAME = os.getenv("INDEX_NAME", "kidsearch")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- Validation ---
-if not all([MEILI_URL, API_KEY, GEMINI_API_KEY]):
-    print("\n❌ ERREUR: MEILI_URL, MEILI_KEY, et GEMINI_API_KEY doivent être définis.")
+if not all([MEILI_URL, API_KEY]):
+    print("\n❌ ERREUR: MEILI_URL et MEILI_KEY doivent être définis.")
     sys.exit(1)
 
 print(f"   - URL Meilisearch: {MEILI_URL}")
@@ -26,7 +26,7 @@ print(f"   - Index: {INDEX_NAME}")
 def check_index_stats():
     """Vérifie les statistiques de l'index"""
     try:
-        client = meilisearch.Client(MEILI_URL, API_KEY)
+        client = Client(url=MEILI_URL, api_key=API_KEY)
         index = client.index(INDEX_NAME)
 
         stats = index.get_stats()
@@ -36,18 +36,18 @@ def check_index_stats():
 
         # Compter les documents avec et sans embeddings
         try:
-            with_embeddings = index.search('', {'filter': '_vectors.default EXISTS', 'limit': 0})
-            without_embeddings = index.search('', {'filter': '_vectors.default NOT EXISTS', 'limit': 0})
+            with_embeddings = index.search("", filter='_vectors.default EXISTS', limit=0)
+            without_embeddings = index.search("", filter='_vectors.default NOT EXISTS', limit=0)
 
             print(f"\n🔍 Embeddings:")
-            print(f"   - Avec embeddings: {with_embeddings.get('estimatedTotalHits', 0)}")
-            print(f"   - Sans embeddings: {without_embeddings.get('estimatedTotalHits', 0)}")
-        except:
-            print("   ⚠️  Impossible de vérifier les embeddings (peut-être pas configurés)")
+            print(f"   - Avec embeddings: {with_embeddings.estimated_total_hits}")
+            print(f"   - Sans embeddings: {without_embeddings.estimated_total_hits}")
+        except Exception as e:
+            print(f"   ⚠️  Impossible de vérifier les embeddings (peut-être pas configurés): {e}")
 
         # Vérifier la configuration des embedders
         settings = index.get_settings()
-        embedders = settings.get('embedders', {})
+        embedders = settings.embedders or {}
         print(f"\n⚙️  Embedders configurés: {list(embedders.keys())}")
 
         return stats.number_of_documents
@@ -65,10 +65,7 @@ def activate_experimental_features():
             "Content-Type": "application/json"
         }
         payload = {
-            "multimodal": True,
-            "vectorStoreSetting": True,
-            "compositeEmbedders": True,
-            "chatCompletions": True
+            "vectorStore": True,
         }
         r = requests.patch(f"{MEILI_URL}/experimental-features", json=payload, headers=headers)
         r.raise_for_status()
@@ -81,8 +78,11 @@ def activate_experimental_features():
 
 def configure_embedders():
     """Configure les embedders default et query"""
+    if not GEMINI_API_KEY:
+        print("\n❌ ERREUR: GEMINI_API_KEY doit être défini pour configurer l'embedder Gemini.")
+        return False
     try:
-        client = meilisearch.Client(MEILI_URL, API_KEY)
+        client = Client(url=MEILI_URL, api_key=API_KEY)
         index = client.index(INDEX_NAME)
 
         print("\n🔄 Configuration des embedders...")
@@ -98,6 +98,7 @@ def configure_embedders():
                 "query": {
                     "source": "rest",
                     "url": embedder_url,
+                    "apiKey": GEMINI_API_KEY,
                     "request": {
                         "model": "models/text-embedding-004",
                         "content": {
@@ -105,9 +106,6 @@ def configure_embedders():
                                 {"text": "{{text}}"}
                             ]
                         }
-                    },
-                    "headers": {
-                        "x-goog-api-key": GEMINI_API_KEY
                     },
                     "response": {
                         "embedding": {
@@ -133,7 +131,7 @@ def configure_embedders():
         else:
             print(f"❌ Échec de la configuration:")
             print(f"   Status: {final_task.status}")
-            if hasattr(final_task, 'error') and final_task.error:
+            if final_task.error:
                 print(f"   Erreur: {final_task.error}")
             return False
 
@@ -157,7 +155,7 @@ def configure_embedders():
 def delete_all_documents():
     """Supprime tous les documents de l'index"""
     try:
-        client = meilisearch.Client(MEILI_URL, API_KEY)
+        client = Client(url=MEILI_URL, api_key=API_KEY)
         index = client.index(INDEX_NAME)
 
         response = input("\n⚠️  ATTENTION: Voulez-vous VRAIMENT supprimer tous les documents ? (oui/non): ")
@@ -210,12 +208,9 @@ def main_menu():
 
 
 if __name__ == "__main__":
-    # Vérification initiale
     doc_count = check_index_stats()
-
     if doc_count > 0:
         print(f"\n💡 Vous avez {doc_count} documents indexés.")
         print("   Si les recherches ne fonctionnent pas, c'est probablement")
         print("   parce que l'embedder 'query' n'est pas configuré.")
-
     main_menu()

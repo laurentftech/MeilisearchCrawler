@@ -2,9 +2,9 @@ import streamlit as st
 import os
 import time
 
-from src.config import LOG_FILE
-from src.state import is_crawler_running
-from src.i18n import get_translator
+from dashboard.src.config import LOG_FILE
+from dashboard.src.state import is_crawler_running
+from dashboard.src.i18n import get_translator
 
 # Initialiser le traducteur
 if 'lang' not in st.session_state:

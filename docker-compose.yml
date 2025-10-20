@@ -20,6 +20,44 @@ services:
       timeout: 10s
       retries: 3
 
+  embeddings_small:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.1
+    container_name: embeddings_small
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    networks:
+      - kidsearch-network
+    environment:
+      # Modèle léger multilingue, idéal pour l’indexation
+      MODEL_ID: intfloat/multilingual-e5-small
+      # Nombre de threads CPU utilisés (ajuste selon ton NAS)
+      NUM_THREADS: 4
+      # Active un peu de batching pour la perf
+      MAX_BATCH_SIZE: 16
+      # Désactive le telemetry HF
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    volumes:
+      # Cache local pour éviter de re-télécharger le modèle à chaque run
+      - ./models_cache:/data
+
+  embeddings_medium:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.1
+    container_name: embeddings_medium
+    restart: unless-stopped
+    ports:
+      - "8082:80"
+    networks:
+      - kidsearch-network
+    environment:
+      # Modèle medium pour le reranking
+      MODEL_ID: intfloat/multilingual-e5-base
+      NUM_THREADS: 4
+      MAX_BATCH_SIZE: 8
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    volumes:
+      - ./models_cache:/data
+
   # KidSearch Dashboard & API (All-in-one)
   kidsearch-all:
     build:
@@ -40,24 +78,38 @@ services:
       API_WORKERS: 4
       API_ENABLED: "true"
       # Display URLs (for clickable links in logs)
-      # Use DISPLAY_HOST for a single server IP, or the specific ones for different domains.
       DISPLAY_HOST: ${DISPLAY_HOST:-}
       DASHBOARD_DISPLAY_HOST: ${DASHBOARD_DISPLAY_HOST:-}
       API_DISPLAY_HOST: ${API_DISPLAY_HOST:-}
+      # Meilisearch connection
       MEILI_URL: http://meilisearch:7700
       MEILI_KEY: ${MEILI_KEY:-masterKey}
       INDEX_NAME: ${INDEX_NAME:-kidsearch}
-      RERANKING_ENABLED: ${RERANKING_ENABLED:-false}
-      RERANKER_MODEL: ${RERANKER_MODEL:-cnmoro/snowflake-arctic-embed-m-v2.0-cpu}
+
+      # --- Embedding & Reranking Configuration ---
+      # Provider: 'huggingface', 'gemini', or 'none'
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-huggingface}
+      
+      # HuggingFace model name (used for info, API provides actual model)
+      HUGGINGFACE_MODEL: ${HUGGINGFACE_MODEL:-intfloat/multilingual-e5-small}
+      # URL for the embedding service (small model)
+      HUGGINGFACE_API_URL: ${HUGGINGFACE_API_URL:-http://embeddings_small:80/embed}
+
+      # Reranking configuration
+      RERANKING_ENABLED: ${RERANKING_ENABLED:-true}
+      # URL for the reranking service (medium model)
+      RERANKER_API_URL: ${RERANKER_API_URL:-http://embeddings_medium:80/embed}
+      # Reranker model name (for info)
+      RERANKER_MODEL: ${RERANKER_MODEL:-intfloat/multilingual-e5-small}
+      
+      # Weights for reranking
       MEILISEARCH_WEIGHT: ${MEILISEARCH_WEIGHT:-0.7}
       CSE_WEIGHT: ${CSE_WEIGHT:-0.3}
+      
+      # --- Google APIs ---
       GOOGLE_CSE_API_KEY: ${GOOGLE_CSE_API_KEY:-}
       GOOGLE_CSE_ID: ${GOOGLE_CSE_ID:-}
-      GOOGLE_GEMINI_API_KEY: ${GOOGLE_GEMINI_API_KEY:-}
-      # Embedding configuration
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-sentence_transformer}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-base}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-} # Used if EMBEDDING_PROVIDER is 'gemini'
     volumes:
       - ./data:/app/data
       - ./.streamlit:/app/.streamlit
@@ -65,7 +117,12 @@ services:
     networks:
       - kidsearch-network
     depends_on:
-      - meilisearch
+      meilisearch:
+        condition: service_healthy
+      embeddings_small:
+        condition: service_started
+      embeddings_medium:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
       interval: 30s

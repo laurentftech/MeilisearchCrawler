@@ -1,27 +1,34 @@
-# API Backend Dependencies
-# To ensure CPU-only PyTorch, install with:
-# pip install -r requirements.txt --index-url https://download.pytorch.org/whl/cpu
+# --------------------------------------
+# KidSearch Project Dependencies
+# --------------------------------------
 
-# Core dependencies
-numpy==1.26.4
-PyYAML
-aiohttp
-beautifulsoup4
-certifi
-curl-cffi
+# --- Core & API ---
 fastapi>=0.109.0
-google-genai
-langdetect
-lxml
-meilisearch
-pandas
-plotly
+uvicorn[standard]>=0.27.0
 pydantic>=2.6.0
 python-dotenv
 requests
-streamlit
-tqdm
+meilisearch-python-sdk>=4.10.0
+numpy==1.26.4
+
+# --- Crawler ---
+beautifulsoup4
+lxml
 trafilatura
-sentence-transformers>=2.2.2
-transformers>=4.38.0
-uvicorn[standard]>=0.27.0
+langdetect
+curl-cffi
+aiohttp
+
+# --- Dashboard ---
+streamlit
+pandas
+plotly
+
+# --- Embeddings ---
+# Provider for Google Gemini embeddings (optional)
+google-genai
+
+# --- Utilities ---
+PyYAML
+tqdm
+certifi

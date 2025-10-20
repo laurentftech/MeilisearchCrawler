@@ -1,79 +1,76 @@
 """
-Semantic reranking service using Sentence Transformer models.
-Reranks search results based on semantic similarity to query.
+Semantic reranking service using an external Hugging Face Inference API.
+Reranks search results based on semantic similarity to the query.
 """
 
 import logging
 import os
 from typing import List, Optional
 import numpy as np
-
-# Forcer l'utilisation du CPU avant l'import de torch
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-os.environ["FORCE_CUDA"] = "0"
-os.environ["FORCE_CPU"] = "1"
+import requests
 
 from ..models import SearchResult
 
 logger = logging.getLogger(__name__)
 
 
-class SentenceTransformerReranker:
+class HuggingFaceAPIReranker:
     """
-    Semantic reranker using Sentence Transformer models.
-    Runs on CPU for local deployment without GPU requirements.
+    Semantic reranker using a Hugging Face Inference API endpoint.
     """
 
-    def __init__(self, model_name: str = "intfloat/multilingual-e5-base"):
+    def __init__(self, api_url: str, model_name: Optional[str] = None):
         """
-        Initialize reranker with a Sentence Transformer model.
+        Initialize reranker with an API URL.
 
         Args:
-            model_name: HuggingFace model name (e.g., 'intfloat/multilingual-e5-base')
+            api_url: URL of the /embed endpoint for the inference API.
+            model_name: Optional, name of the expected HuggingFace model for logging.
         """
+        self.api_url = api_url
         self.model_name = model_name
-        self.model = None
-        self.tokenizer = None
         self._initialized = False
+        self.initialize()
 
     def initialize(self):
         """
-        Lazy load the model and tokenizer.
-        Called on first use to avoid slowing down API startup.
+        Lazy load and check the connection to the API.
         """
         if self._initialized:
             return
 
+        if not self.api_url:
+            logger.warning("RERANKER_API_URL is not set. Reranking will be disabled.")
+            self._initialized = False
+            return
+
         try:
-            logger.info(f"Loading Sentence Transformer model: {self.model_name}")
+            # Get base url from http://.../embed
+            base_url = self.api_url.rsplit('/', 1)[0]
+            info_url = f"{base_url}/info"
+            
+            logger.info(f"Connecting to Reranker API at {info_url}...")
+            response = requests.get(info_url, timeout=5)
+            response.raise_for_status()
+            info = response.json()
+            
+            api_model = info.get('model_id')
+            logger.info(f"Reranker API connected. Model: {api_model}")
 
-            # Import torch et forcer CPU explicitement
-            import torch
-            torch.set_num_threads(1)
-
-            # Vérifier qu'on n'utilise pas CUDA
-            if torch.cuda.is_available():
-                logger.warning("CUDA is available but will be IGNORED - forcing CPU")
-
-            from sentence_transformers import SentenceTransformer
-
-            # Force CPU device explicitement
-            self.model = SentenceTransformer(
-                self.model_name,
-                trust_remote_code=True,
-                device='cpu'
-            )
-
-            # Double-check que le modèle est bien sur CPU
-            if hasattr(self.model, 'device'):
-                logger.info(f"Model device: {self.model.device}")
+            if self.model_name and self.model_name != api_model:
+                logger.warning(f"Configured reranker model '{self.model_name}' differs from API model '{api_model}'.")
 
             self._initialized = True
-            logger.info("Sentence Transformer model loaded successfully on CPU")
+            logger.info("Hugging Face API Reranker initialized successfully.")
 
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to connect to reranker API at {self.api_url}: {e}")
+            self._initialized = False # Ensure it stays uninitialized
+            # We don't raise here, so the app can start. Reranking will be skipped.
         except Exception as e:
-            logger.error(f"Failed to load reranker model: {e}", exc_info=True)
-            raise
+            logger.error(f"Failed to initialize reranker: {e}", exc_info=True)
+            self._initialized = False
+
 
     def rerank(
         self,
@@ -85,11 +82,10 @@ class SentenceTransformerReranker:
         Rerank search results based on semantic similarity to query.
 
         Process:
-        1. Generate query embedding
-        2. Generate embeddings for each result (title + excerpt)
-        3. Calculate cosine similarity
-        4. Blend with original scores (0.5 semantic + 0.5 original)
-        5. Re-sort by blended score
+        1. Generate embeddings for the query and all results in a single API call.
+        2. Calculate cosine similarity between query embedding and each result embedding.
+        3. Blend with original scores.
+        4. Re-sort by blended score.
 
         Args:
             query: Search query
@@ -97,15 +93,13 @@ class SentenceTransformerReranker:
             top_k: Return only top K results (None = all)
 
         Returns:
-            Reranked results with updated scores
+            Reranked results with updated scores, or original results if reranking fails.
         """
 
-        if not results:
+        if not results or not self._initialized:
+            if not self._initialized:
+                logger.warning("Reranker not initialized, skipping reranking.")
             return results
-
-        # Lazy load model
-        if not self._initialized:
-            self.initialize()
 
         try:
             logger.info(f"Reranking {len(results)} results for query: '{query}'")
@@ -115,28 +109,40 @@ class SentenceTransformerReranker:
                 if result.original_score is None:
                     result.original_score = result.score
 
-            # Generate query embedding
-            query_embedding = self.model.encode(query, convert_to_numpy=True)
-
-            # Generate embeddings for results (title + excerpt)
+            # Prepare texts for the API
             result_texts = [
                 f"{r.title} {r.excerpt if r.excerpt else ''}"
                 for r in results
             ]
-            result_embeddings = self.model.encode(result_texts, convert_to_numpy=True)
+            all_texts = [query] + result_texts
+
+            # Generate embeddings in one call
+            response = requests.post(
+                self.api_url,
+                json={"inputs": all_texts, "normalize": True, "truncate": True},
+                headers={"Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            all_embeddings = np.array(response.json(), dtype=np.float32)
+
+            if len(all_embeddings) != len(all_texts):
+                 logger.error(f"Mismatch between number of texts sent ({len(all_texts)}) and embeddings received ({len(all_embeddings)}).")
+                 return results
+
+            query_embedding = all_embeddings[0]
+            result_embeddings = all_embeddings[1:]
 
             # Calculate cosine similarities
-            similarities = []
-            for result_emb in result_embeddings:
-                similarity = self._cosine_similarity(query_embedding, result_emb)
-                similarities.append(similarity)
+            # Since embeddings are normalized, dot product is equivalent to cosine similarity
+            similarities = np.dot(result_embeddings, query_embedding)
 
-            # Blend semantic similarity with original scores (50/50)
+            # Blend semantic similarity with original scores
             for i, result in enumerate(results):
                 semantic_score = float(similarities[i])
                 # Normalize original score to 0-1 range if needed
                 original_norm = min(1.0, max(0.0, result.original_score or 0.5))
-                # Blend: 50% original + 50% semantic
+                
+                # Blend: 50% original + 50% semantic (can be made configurable)
                 result.score = 0.5 * original_norm + 0.5 * semantic_score
 
             # Sort by new blended score
@@ -150,24 +156,12 @@ class SentenceTransformerReranker:
 
             return results
 
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Reranking API call failed: {e}")
+            return results # Return original results on error
         except Exception as e:
             logger.error(f"Reranking failed: {e}", exc_info=True)
-            # Return original results on error
             return results
-
-    def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
-        """
-        Calculate cosine similarity between two vectors.
-
-        Args:
-            a: First vector
-            b: Second vector
-
-        Returns:
-            Cosine similarity (0-1)
-        """
-        return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-
 
 # TODO: Implement query expansion
 # - Synonym expansion for children's queries
