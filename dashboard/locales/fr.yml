@@ -97,6 +97,7 @@ search:
   semantic_ratio_label: "Ratio Sémantique"
   semantic_ratio_help: "Contrôle l'équilibre entre la recherche par mot-clé (0.0) et la recherche sémantique pure (1.0)."
   spinner_searching: "Recherche en cours..."
+  search_button_label: "Rechercher"
   results_summary: "{count} résultats affichés sur ~{total} en {time} ms"
   no_results_found: "Aucun résultat trouvé pour cette requête."
   error_during_search: "Une erreur est survenue pendant la recherche: {e}"

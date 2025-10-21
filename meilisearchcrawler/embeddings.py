@@ -52,18 +52,33 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             raise RuntimeError(f"Impossible d'initialiser Gemini: {e}")
 
     def encode(self, texts: List[str]) -> List[List[float]]:
-        """Génère des embeddings avec Gemini"""
+        """Génère des embeddings avec l'API d'inférence Hugging Face"""
         try:
-            result = self.client.models.embed_content(
-                model=self.model_name,
-                contents=texts
+            response = requests.post(
+                self.api_url,
+                json={"inputs": texts, "normalize": True, "truncate": True},
+                headers={"Content-Type": "application/json"},
+                timeout=30  # AJOUTÉ: timeout pour éviter les blocages
             )
-            return [embedding.values for embedding in result.embeddings]
-        except Exception as e:
-            if "quota" in str(e).lower():
-                logger.error(f"🛑 Quota Gemini dépassé: {e}")
+            response.raise_for_status()
+            embeddings = response.json()
+
+            # CORRECTION: L'API retourne directement une liste d'embeddings
+            # Pas besoin de validation supplémentaire ici
+            if isinstance(embeddings, list) and len(embeddings) > 0:
+                return embeddings
             else:
-                logger.error(f"❌ Erreur API Gemini: {e}")
+                logger.error(f"❌ Format de réponse inattendu de l'API: {type(embeddings)}")
+                return [[] for _ in texts]
+
+        except requests.exceptions.Timeout:
+            logger.error(f"⏱️ Timeout lors de la requête à l'API Hugging Face")
+            return [[] for _ in texts]
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Erreur API Hugging Face: {e}")
+            return [[] for _ in texts]
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de l'encodage avec l'API Hugging Face: {e}")
             return [[] for _ in texts]
 
     def get_embedding_dim(self) -> int:
@@ -102,7 +117,7 @@ class HuggingFaceInferenceAPIEmbeddingProvider(EmbeddingProvider):
         try:
             # remove /embed from url to get /info
             base_url = self.api_url.rsplit('/', 1)[0]
-            response = requests.get(f"{base_url}/info")
+            response = requests.get(f"{base_url}/info", timeout=5)
             response.raise_for_status()
             info = response.json()
             logger.info(f"✓ Connexion à l'API d'inférence réussie: version {info.get('version')}, modèle {info.get('model_id')}")
@@ -110,9 +125,10 @@ class HuggingFaceInferenceAPIEmbeddingProvider(EmbeddingProvider):
             if self.model_name != info.get('model_id'):
                 logger.warning(f"Le modèle configuré ({self.model_name}) est différent de celui de l'API ({info.get('model_id')}). Utilisation du modèle de l'API.")
                 self.model_name = info.get('model_id')
-            if self.embedding_dim != info.get('dim'):
-                logger.warning(f"La dimension configurée ({self.embedding_dim}) est différente de celle de l'API ({info.get('dim')}). Utilisation de la dimension de l'API.")
-                self.embedding_dim = info.get('dim')
+            api_dim = info.get('dim')
+            if api_dim is not None and self.embedding_dim != api_dim:
+                logger.warning(f"La dimension configurée ({self.embedding_dim}) est différente de celle de l'API ({api_dim}). Utilisation de la dimension de l'API.")
+                self.embedding_dim = api_dim
 
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"Impossible de se connecter à l'API d'inférence Hugging Face sur {self.api_url}: {e}")

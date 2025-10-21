@@ -29,34 +29,26 @@ services:
     networks:
       - kidsearch-network
     environment:
-      # Modèle léger multilingue, idéal pour l’indexation
-      MODEL_ID: intfloat/multilingual-e5-small
-      # Nombre de threads CPU utilisés (ajuste selon ton NAS)
-      NUM_THREADS: 4
-      # Active un peu de batching pour la perf
-      MAX_BATCH_SIZE: 16
-      # Désactive le telemetry HF
+      # Pas de MODEL_ID, NUM_THREADS, etc. - voir ci-dessous
       HF_HUB_DISABLE_TELEMETRY: "1"
+    command:
+      - "--model-id"
+      - "intfloat/multilingual-e5-small"
+      - "--port"
+      - "80"
+      - "--max-concurrent-requests"
+      - "16"
+      - "--max-batch-tokens"
+      - "16384"
     volumes:
       # Cache local pour éviter de re-télécharger le modèle à chaque run
       - ./models_cache:/data
-
-  embeddings_medium:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.1
-    container_name: embeddings_medium
-    restart: unless-stopped
-    ports:
-      - "8082:80"
-    networks:
-      - kidsearch-network
-    environment:
-      # Modèle medium pour le reranking
-      MODEL_ID: intfloat/multilingual-e5-base
-      NUM_THREADS: 4
-      MAX_BATCH_SIZE: 8
-      HF_HUB_DISABLE_TELEMETRY: "1"
-    volumes:
-      - ./models_cache:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s  # Le téléchargement du modèle prend du temps
 
   # KidSearch Dashboard & API (All-in-one)
   kidsearch-all:
@@ -82,8 +74,8 @@ services:
       DASHBOARD_DISPLAY_HOST: ${DASHBOARD_DISPLAY_HOST:-}
       API_DISPLAY_HOST: ${API_DISPLAY_HOST:-}
       # Meilisearch connection
-      MEILI_URL: http://meilisearch:7700
-      MEILI_KEY: ${MEILI_KEY:-masterKey}
+      MEILI_URL: https://meilisearch.gandulf78.synology.me
+      MEILI_KEY: ${MEILI_KEY:-DW?D%_QBz%=6eJqk?Wsc}
       INDEX_NAME: ${INDEX_NAME:-kidsearch}
 
       # --- Embedding & Reranking Configuration ---
@@ -98,7 +90,7 @@ services:
       # Reranking configuration
       RERANKING_ENABLED: ${RERANKING_ENABLED:-true}
       # URL for the reranking service (medium model)
-      RERANKER_API_URL: ${RERANKER_API_URL:-http://embeddings_medium:80/embed}
+      RERANKER_API_URL: ${RERANKER_API_URL:-http://embeddings_small:80/embed}
       # Reranker model name (for info)
       RERANKER_MODEL: ${RERANKER_MODEL:-intfloat/multilingual-e5-small}
       
@@ -117,11 +109,7 @@ services:
     networks:
       - kidsearch-network
     depends_on:
-      meilisearch:
-        condition: service_healthy
       embeddings_small:
-        condition: service_started
-      embeddings_medium:
         condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]

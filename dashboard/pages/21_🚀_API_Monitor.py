@@ -249,7 +249,7 @@ if submit and test_query:
                 "use_reranking": use_reranking,
             }
 
-            response = requests.get(f"{API_BASE_URL}/search", params=params, timeout=10)
+            response = requests.get(f"{API_BASE_URL}/search", params=params, timeout=30)
 
             if response.status_code == 200:
                 data = response.json()

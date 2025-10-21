@@ -45,7 +45,7 @@ def get_embedding_stats(force_refresh_key=None):
         config_ok = has_default and has_query
 
         # Compter les documents sans embeddings (syntaxe de la nouvelle SDK)
-        res = index.search("", {'filter': '_vectors.default NOT EXISTS', 'limit': 0})
+        res = index.search("", filter='_vectors.default NOT EXISTS', limit=0)
         without_vectors = res.estimated_total_hits
 
         return {

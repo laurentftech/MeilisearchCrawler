@@ -64,13 +64,13 @@ else:
 
         with st.spinner(t("tree.loading_pages").format(max_pages=max_pages)):
             params = {
-                'limit': max_pages, 
-                'attributes_to_retrieve': ['url', 'site', 'title', 'indexed_at', 'last_modified', 'timestamp', 'last_crawled_at', 'content_hash']
+                'limit': max_pages,
+                'fields': ['url', 'site', 'title', 'indexed_at', 'last_modified', 'timestamp', 'last_crawled_at', 'content_hash']
             }
             if filter_site != t("tree.all_sites"):
                 params['filter'] = f'site = "{filter_site}"'
-            # Corrected: Use new SDK syntax (**params)
-            documents = index_ref.get_documents(**params).results
+            # The new SDK expects a single dictionary argument for parameters
+            documents = index_ref.get_documents(params).results
 
         if not documents:
             st.warning(t("tree.no_pages_found"))

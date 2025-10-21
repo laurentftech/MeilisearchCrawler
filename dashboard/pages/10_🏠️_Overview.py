@@ -63,7 +63,7 @@ if status:
             hovermode='x unified',
             height=300
         )
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
 
     if "stats" in status and status["stats"]:
         st.subheader(t("overview.site_performance"))
@@ -87,10 +87,10 @@ if status:
                 showlegend=True,
                 legend_title_text=t('overview.chart_status')
             )
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
 
             with st.expander(t("overview.show_details_table")):
-                st.dataframe(df, width='stretch')
+                st.dataframe(df, use_container_width=True)
 else:
     st.warning(t("overview.no_status_warning"))
     if st.button(t("overview.launch_first_crawl"), type="primary"):

@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 from meilisearch_python_sdk import Client
 from meilisearch_python_sdk.errors import MeilisearchApiError, MeilisearchTimeoutError
+from meilisearch_python_sdk.models.settings import MeilisearchSettings
 
 # Ajouter le répertoire racine au path pour les imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -118,7 +119,8 @@ try:
         sys.exit(1)
 
     # Appliquer la configuration
-    task = index.update_settings(settings_payload)
+    settings_model = MeilisearchSettings.model_validate(settings_payload)
+    task = index.update_settings(settings_model)
     print(f"   - Tâche soumise (UID: {task.task_uid}), en attente de résolution...")
 
     timeout = 120000 if EMBEDDING_PROVIDER == "gemini" else 30000
