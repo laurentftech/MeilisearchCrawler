@@ -22,7 +22,7 @@ def get_translator(language: str):
     """Retourne une fonction de traduction qui récupère une clé dans le fichier de langue."""
     translations = load_translation(language)
 
-    def t(key: str):
+    def t(key: str, **kwargs):
         # Navigue dans le dictionnaire si la clé est imbriquée (ex: "page.title")
         keys = key.split('.')
         value = translations
@@ -33,6 +33,10 @@ def get_translator(language: str):
                 # Si la clé n'est pas trouvée, on la retourne telle quelle
                 # pour faciliter le développement (on voit ce qui manque)
                 return key
-        return value
+        
+        if kwargs and isinstance(value, str):
+            return value.format(**kwargs)
+        
+        return value    
 
     return t

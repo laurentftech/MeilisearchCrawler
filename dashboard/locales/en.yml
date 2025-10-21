@@ -23,6 +23,8 @@ page_config: "- **⚙️ Configuration**: Modify the site configuration to be cr
 page_logs: "- **🪵 Logs**: View detailed logs from the crawler."
 page_tree: "- **🌳 Page Tree**: Visualize the structure and freshness of your indexed pages."
 page_embeddings: "- **🧠 Embeddings**: Manage semantic indexing."
+page_api_documentation: "- **📚 API Documentation**: Explore the API endpoints."
+page_api_monitor: "- **📡 API Monitor**: Track API activity and performance."
 current_status: "Current Status"
 status_running: "**The crawler is currently running.**\n\nYou can monitor its progress on the `Overview` page."
 status_stopped: "**The crawler is currently stopped.**\n\nGo to the `Controls` page to start it."

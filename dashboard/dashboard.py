@@ -201,14 +201,19 @@ col1, col2 = st.columns(2)
 with col1:
     st.subheader(t('available_pages'))
     st.markdown(f"""
+    **{t('section_crawler')}**
     {t('page_overview')}
     {t('page_controls')}
+    {t('page_config')}
     {t('page_search')}
     {t('page_stats')}
     {t('page_tree')}
-    {t('page_embeddings')}
-    {t('page_config')}
     {t('page_logs')}
+
+    **{t('section_api')}**
+    {t('page_embeddings')}
+    {t('page_api_documentation')}   
+    {t('page_api_monitor')}    
     """)
 
 with col2:
