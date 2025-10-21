@@ -87,7 +87,7 @@ class MeilisearchClient:
             return False
 
     async def search(
-            self, query: str, lang: Optional[str] = None, limit: int = 20
+            self, query: str, lang: Optional[str] = None, limit: int = 20, use_hybrid: bool = True  # AJOUTÉ
     ) -> List[SearchResult]:
         """Search Meilisearch index using keyword or hybrid vector search."""
         if not self.index:
@@ -95,6 +95,8 @@ class MeilisearchClient:
             return []
 
         try:
+            from meilisearch_python_sdk.models.search import Hybrid
+
             search_params = {
                 "limit": limit,
                 "attributes_to_retrieve": [
@@ -107,8 +109,8 @@ class MeilisearchClient:
             if lang:
                 search_params["filter"] = f"lang = {lang}"
 
-            if self.use_vector_search:
-                # CORRECTION: Utiliser l'objet Hybrid au lieu d'un dict
+            # MODIFIÉ: Vérifier à la fois use_hybrid ET use_vector_search
+            if use_hybrid and self.use_vector_search:
                 search_params["hybrid"] = Hybrid(
                     semantic_ratio=0.5,
                     embedder="default"
@@ -122,7 +124,6 @@ class MeilisearchClient:
                             logger.debug(f"Added vector for query: '{query}'")
                     except Exception as e:
                         logger.warning(f"Failed to generate query embedding, falling back to keyword search: {e}")
-                        # CORRECTION: Supprimer hybrid au lieu de juste del
                         search_params.pop("hybrid", None)
 
             results: SearchResults = await self.index.search(query, **search_params)

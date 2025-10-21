@@ -45,13 +45,14 @@ async def search(
     lang: Language = Query(default=Language.FR, description="Search language"),
     limit: int = Query(default=20, ge=1, le=100, description="Max results"),
     use_cse: bool = Query(default=True, description="Include Google CSE results"),
+    use_hybrid: bool = Query(default=True, description="Use hybrid vector search in Meilisearch"),
     use_reranking: bool = Query(default=True, description="Apply semantic reranking"),
 ) -> SearchResponse:
     """
     Unified search endpoint combining Meilisearch and Google CSE.
 
     Flow:
-    1. Query Meilisearch for local indexed content
+    1. Query Meilisearch for local indexed content (keyword or hybrid)
     2. Query Google CSE if enabled (with cache check)
     3. Apply safety filters to all results
     4. Merge and deduplicate results
@@ -63,7 +64,7 @@ async def search(
 
     logger.info(
         f"Search request: q='{q}', lang={lang}, limit={limit}, "
-        f"use_cse={use_cse}, use_reranking={use_reranking}"
+        f"use_cse={use_cse}, use_hybrid={use_hybrid}, use_reranking={use_reranking}"
     )
 
     # Get services from app state
@@ -110,7 +111,8 @@ async def search(
         meilisearch_results = await meilisearch_client.search(
             query=q,
             lang=lang.value if lang != Language.ALL else None,
-            limit=limit * 2  # Get more results for better merging
+            limit=limit * 2,
+            use_hybrid=use_hybrid  # AJOUTÉ: passer le paramètre
         )
         meilisearch_time_ms = (time.time() - meilisearch_start) * 1000
         logger.info(f"Meilisearch returned {len(meilisearch_results)} results in {meilisearch_time_ms:.2f}ms")
