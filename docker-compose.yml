@@ -31,6 +31,7 @@ services:
     environment:
       # Pas de MODEL_ID, NUM_THREADS, etc. - voir ci-dessous
       HF_HUB_DISABLE_TELEMETRY: "1"
+      PYTHONPATH: "/app:/app/dashboard"
     command:
       - "--model-id"
       - "intfloat/multilingual-e5-small"
@@ -74,8 +75,8 @@ services:
       DASHBOARD_DISPLAY_HOST: ${DASHBOARD_DISPLAY_HOST:-}
       API_DISPLAY_HOST: ${API_DISPLAY_HOST:-}
       # Meilisearch connection
-      MEILI_URL: https://meilisearch.gandulf78.synology.me
-      MEILI_KEY: ${MEILI_KEY:-DW?D%_QBz%=6eJqk?Wsc}
+      MEILI_URL: http://meilisearch:7700
+      MEILI_KEY: ${MEILI_KEY:-masterKey}
       INDEX_NAME: ${INDEX_NAME:-kidsearch}
 
       # --- Embedding & Reranking Configuration ---
@@ -109,7 +110,11 @@ services:
     networks:
       - kidsearch-network
     depends_on:
+      meilisearch:
+        condition: service_healthy
       embeddings_small:
+        condition: service_started
+      embeddings_medium:
         condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]

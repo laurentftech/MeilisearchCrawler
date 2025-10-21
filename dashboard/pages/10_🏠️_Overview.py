@@ -3,9 +3,9 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import time
-from src.utils import load_status, load_crawl_history, save_crawl_history
-from src.state import start_crawler, is_crawler_running
-from src.i18n import get_translator
+from dashboard.src.utils import load_status, load_crawl_history, save_crawl_history
+from dashboard.src.state import start_crawler, is_crawler_running
+from dashboard.src.i18n import get_translator
 
 # Initialiser le traducteur
 if 'lang' not in st.session_state:

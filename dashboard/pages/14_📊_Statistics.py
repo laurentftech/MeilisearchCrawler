@@ -10,8 +10,8 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
-from src.i18n import get_translator
-from src.state import is_crawler_running
+from dashboard.src.i18n import get_translator
+from dashboard.src.state import is_crawler_running
 from meilisearchcrawler.cache_db import CacheDB
 
 # Initialiser le traducteur

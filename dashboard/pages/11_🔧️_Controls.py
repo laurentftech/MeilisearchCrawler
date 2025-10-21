@@ -4,10 +4,10 @@ import subprocess
 import sys
 import os
 
-from src.state import start_crawler, stop_crawler, clear_cache, is_crawler_running
-from src.utils import load_sites_config, load_cache_stats, parse_logs_for_errors
-from src.config import CRAWLER_SCRIPT
-from src.i18n import get_translator
+from dashboard.src.state import start_crawler, stop_crawler, clear_cache, is_crawler_running
+from dashboard.src.utils import load_sites_config, load_cache_stats, parse_logs_for_errors
+from dashboard.src.config import CRAWLER_SCRIPT
+from dashboard.src.i18n import get_translator
 
 # Initialiser le traducteur
 if 'lang' not in st.session_state:

@@ -71,97 +71,44 @@ class HuggingFaceAPIReranker:
             logger.error(f"Failed to initialize reranker: {e}", exc_info=True)
             self._initialized = False
 
-
-    def rerank(
-        self,
-        query: str,
-        results: List[SearchResult],
-        top_k: Optional[int] = None,
-    ) -> List[SearchResult]:
-        """
-        Rerank search results based on semantic similarity to query.
-
-        Process:
-        1. Generate embeddings for the query and all results in a single API call.
-        2. Calculate cosine similarity between query embedding and each result embedding.
-        3. Blend with original scores.
-        4. Re-sort by blended score.
-
-        Args:
-            query: Search query
-            results: Results to rerank
-            top_k: Return only top K results (None = all)
-
-        Returns:
-            Reranked results with updated scores, or original results if reranking fails.
-        """
-
-        if not results or not self._initialized:
-            if not self._initialized:
-                logger.warning("Reranker not initialized, skipping reranking.")
-            return results
-
+    def rerank(self, query: str, results: List[SearchResult], top_k: int) -> List[SearchResult]:
+        """Rerank results using embeddings similarity."""
         try:
-            logger.info(f"Reranking {len(results)} results for query: '{query}'")
-
-            # Store original scores
-            for result in results:
-                if result.original_score is None:
-                    result.original_score = result.score
-
-            # Prepare texts for the API
-            result_texts = [
-                f"{r.title} {r.excerpt if r.excerpt else ''}"
-                for r in results
-            ]
-            all_texts = [query] + result_texts
-
-            # Generate embeddings in one call
-            response = requests.post(
-                self.api_url,
-                json={"inputs": all_texts, "normalize": True, "truncate": True},
-                headers={"Content-Type": "application/json"}
+            # Encoder la requête
+            query_response = requests.post(
+                self.api_url.replace('/rerank', '/embed'),  # Utiliser /embed
+                json={"inputs": [query], "normalize": True},
+                timeout=5
             )
-            response.raise_for_status()
-            all_embeddings = np.array(response.json(), dtype=np.float32)
+            query_response.raise_for_status()
+            query_embedding = query_response.json()[0]
 
-            if len(all_embeddings) != len(all_texts):
-                 logger.error(f"Mismatch between number of texts sent ({len(all_texts)}) and embeddings received ({len(all_embeddings)}).")
-                 return results
+            # Encoder tous les documents
+            texts = [f"{r.title} {r.excerpt}" for r in results]
+            docs_response = requests.post(
+                self.api_url.replace('/rerank', '/embed'),
+                json={"inputs": texts, "normalize": True},
+                timeout=10
+            )
+            docs_response.raise_for_status()
+            doc_embeddings = docs_response.json()
 
-            query_embedding = all_embeddings[0]
-            result_embeddings = all_embeddings[1:]
+            # Calculer similarité cosinus
+            import numpy as np
+            query_vec = np.array(query_embedding)
+            scores = [np.dot(query_vec, np.array(doc_emb)) for doc_emb in doc_embeddings]
 
-            # Calculate cosine similarities
-            # Since embeddings are normalized, dot product is equivalent to cosine similarity
-            similarities = np.dot(result_embeddings, query_embedding)
+            # Réordonner par score
+            for idx, result in enumerate(results):
+                result.original_score = result.score
+                result.score = float(scores[idx])
 
-            # Blend semantic similarity with original scores
-            for i, result in enumerate(results):
-                semantic_score = float(similarities[i])
-                # Normalize original score to 0-1 range if needed
-                original_norm = min(1.0, max(0.0, result.original_score or 0.5))
-                
-                # Blend: 50% original + 50% semantic (can be made configurable)
-                result.score = 0.5 * original_norm + 0.5 * semantic_score
+            results.sort(key=lambda x: x.score, reverse=True)
+            return results[:top_k]
 
-            # Sort by new blended score
-            results.sort(key=lambda r: r.score, reverse=True)
-
-            # Limit to top_k
-            if top_k:
-                results = results[:top_k]
-
-            logger.info(f"Reranking complete, returning {len(results)} results")
-
-            return results
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Reranking API call failed: {e}")
-            return results # Return original results on error
         except Exception as e:
-            logger.error(f"Reranking failed: {e}", exc_info=True)
-            return results
+            logger.error(f"Reranking failed: {e}")
+            return results[:top_k]  # Fallback sans reranking
 
 # TODO: Implement query expansion
 # - Synonym expansion for children's queries

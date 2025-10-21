@@ -12,7 +12,7 @@ from typing import List, Optional
 
 from meilisearch_python_sdk import AsyncClient
 from meilisearch_python_sdk.errors import MeilisearchApiError, MeilisearchCommunicationError
-from meilisearch_python_sdk.models.search import SearchResults
+from meilisearch_python_sdk.models.search import SearchResults, Hybrid
 
 # Ajouter le répertoire racine au path pour les imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
@@ -87,7 +87,7 @@ class MeilisearchClient:
             return False
 
     async def search(
-        self, query: str, lang: Optional[str] = None, limit: int = 20
+            self, query: str, lang: Optional[str] = None, limit: int = 20
     ) -> List[SearchResult]:
         """Search Meilisearch index using keyword or hybrid vector search."""
         if not self.index:
@@ -108,7 +108,12 @@ class MeilisearchClient:
                 search_params["filter"] = f"lang = {lang}"
 
             if self.use_vector_search:
-                search_params["hybrid"] = {"semantic_ratio": 0.5}
+                # CORRECTION: Utiliser l'objet Hybrid au lieu d'un dict
+                search_params["hybrid"] = Hybrid(
+                    semantic_ratio=0.5,
+                    embedder="default"
+                )
+
                 if not self.is_rest_embedder:
                     try:
                         query_embeddings = self.embedding_provider.encode([query])
@@ -117,7 +122,8 @@ class MeilisearchClient:
                             logger.debug(f"Added vector for query: '{query}'")
                     except Exception as e:
                         logger.warning(f"Failed to generate query embedding, falling back to keyword search: {e}")
-                        del search_params["hybrid"]
+                        # CORRECTION: Supprimer hybrid au lieu de juste del
+                        search_params.pop("hybrid", None)
 
             results: SearchResults = await self.index.search(query, **search_params)
 
