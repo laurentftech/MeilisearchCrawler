@@ -11,11 +11,9 @@ def get_meili_client():
         return None
     try:
         client = Client(url=MEILI_URL, api_key=MEILI_KEY)
-        if client.is_healthy():
-            return client
-        else:
-            st.error("Could not connect to Meilisearch. The server is not healthy.")
-            return None
+        # Test la connexion en appelant health()
+        client.health()
+        return client
     except MeilisearchCommunicationError as e:
         st.error(f"Error connecting to Meilisearch: {e}. Please check if the service is running and the URL is correct.")
         return None

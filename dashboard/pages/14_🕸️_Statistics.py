@@ -61,7 +61,7 @@ if stats:
     if sites:
         sorted_sites = sorted(sites.items(), key=lambda item: item[1], reverse=True)
         df_sites = pd.DataFrame(sorted_sites, columns=[t('statistics.site'), t('statistics.page_count')])
-        st.dataframe(df_sites, use_container_width=True, hide_index=True)
+        st.dataframe(df_sites, width='stretch', hide_index=True)
     else:
         st.info(t("statistics.no_sites_in_cache"))
 

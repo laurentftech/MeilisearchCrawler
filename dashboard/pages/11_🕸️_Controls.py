@@ -52,7 +52,7 @@ with col1:
 
     site_param = None if selected_site == t("controls.all_sites") else selected_site
 
-    if st.button(t("controls.launch_crawl"), disabled=running, type="primary", use_container_width=True):
+    if st.button(t("controls.launch_crawl"), disabled=running, type="primary", width='stretch'):
         success = start_crawler(site=site_param, force=force_crawl, workers=workers, embed=generate_embeddings)
         if success:
             if site_param:
@@ -67,7 +67,7 @@ with col1:
 with col2:
     st.subheader(t("controls.actions"))
 
-    if st.button(t("controls.stop_crawl"), disabled=not running, type="secondary", use_container_width=True):
+    if st.button(t("controls.stop_crawl"), disabled=not running, type="secondary", width='stretch'):
         success = stop_crawler()
         if success:
             st.toast(t('controls.toast_stop_signal_sent'), icon="🛑")
@@ -78,7 +78,7 @@ with col2:
 
     st.markdown("---")
 
-    if st.button(t("controls.clear_cache"), disabled=running, use_container_width=True):
+    if st.button(t("controls.clear_cache"), disabled=running, width='stretch'):
         success = clear_cache()
         if success:
             st.toast(t('controls.toast_cache_cleared'), icon="🗑️")
@@ -93,7 +93,7 @@ with col2:
 
     st.markdown("---")
 
-    if st.button(t("controls.show_cache_stats"), use_container_width=True):
+    if st.button(t("controls.show_cache_stats"), width='stretch'):
         with st.spinner(t("controls.calculating_stats")):
             result = subprocess.run(
                 [sys.executable, CRAWLER_SCRIPT, "--stats-only"],

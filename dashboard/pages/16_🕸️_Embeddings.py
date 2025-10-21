@@ -180,7 +180,7 @@ if stats:
                 on_click=run_embedding_process,
                 disabled=process_running,
                 type="primary",
-                use_container_width=True
+                width='stretch'
             )
         with col_btn2:
             if process_running:

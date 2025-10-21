@@ -77,8 +77,13 @@ async def search(
             detail="Meilisearch client is not initialized.",
         )
     try:
-        await meilisearch_client.health()
-    except MeilisearchCommunicationError as e:
+        is_healthy = await meilisearch_client.is_healthy()
+        if not is_healthy:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Meilisearch service is not available.",
+            )
+    except Exception as e:
         logger.error(f"Meilisearch connection check failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

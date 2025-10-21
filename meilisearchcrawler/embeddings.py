@@ -201,7 +201,7 @@ def create_embedding_provider(provider_name: Optional[str] = None) -> EmbeddingP
             return NoEmbeddingProvider()
 
     elif provider_name == 'huggingface':
-        model_name = os.getenv('HUGGINGFACE_MODEL', 'intfloat/multilingual-e5-base')
+        model_name = os.getenv('HUGGINGFACE_MODEL', 'intfloat/multilingual-e5-small')
         api_url = os.getenv('HUGGINGFACE_API_URL', 'http://localhost:8080/embed')
 
         try:

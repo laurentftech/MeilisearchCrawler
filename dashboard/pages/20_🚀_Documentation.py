@@ -77,7 +77,7 @@ endpoints = [
 ]
 
 df_endpoints = pd.DataFrame(endpoints)
-st.dataframe(df_endpoints, use_container_width=True, hide_index=True)
+st.dataframe(df_endpoints, width='stretch', hide_index=True)
 
 st.markdown("---")
 

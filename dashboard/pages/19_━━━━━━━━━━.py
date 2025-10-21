@@ -24,8 +24,8 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown("### 📖 Interactive Docs")
     st.markdown("Access the FastAPI interactive documentation:")
-    st.link_button("Open Swagger UI", "http://localhost:8080/api/docs", use_container_width=True)
-    st.link_button("Open ReDoc", "http://localhost:8080/api/redoc", use_container_width=True)
+    st.link_button("Open Swagger UI", "http://localhost:8080/api/docs", width='stretch')
+    st.link_button("Open ReDoc", "http://localhost:8080/api/redoc", width='stretch')
 
 with col2:
     st.markdown("### 🔍 Quick Test")

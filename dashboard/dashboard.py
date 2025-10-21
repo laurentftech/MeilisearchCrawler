@@ -5,13 +5,11 @@ from dotenv import load_dotenv
 import sys
 from pathlib import Path
 
+# This is a hack to make sure the app is launched from the root of the project
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 # Charger les variables d'environnement pour que Streamlit les voie
 load_dotenv()
-
-# Add project root to sys.path for module resolution
-# This is crucial for Streamlit to find modules like 'meilisearchcrawler.config'
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
 
 # =======================
 #  Configuration & Page
