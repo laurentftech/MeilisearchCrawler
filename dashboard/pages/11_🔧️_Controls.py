@@ -23,8 +23,16 @@ if running:
     st.info(t("controls.crawler_is_running_info"))
     st.page_link("pages/01_Overview.py", label=t("controls.go_to_overview_button"), icon="🏠")
 
-# Vérifier si la clé Gemini est disponible
-gemini_key_present = bool(os.getenv("GEMINI_API_KEY"))
+# Vérifier si un provider d'embedding est configuré
+embedding_provider = os.getenv("EMBEDDING_PROVIDER", "none").lower()
+embeddings_enabled = embedding_provider != "none"
+
+help_text = ""
+if not embeddings_enabled:
+    help_text = "EMBEDDING_PROVIDER n'est pas configuré ou est sur 'none' dans votre .env"
+elif embedding_provider == "gemini" and not os.getenv("GEMINI_API_KEY"):
+    help_text = "Le provider Gemini est sélectionné mais GEMINI_API_KEY est manquante."
+    embeddings_enabled = False
 
 # Crawl options
 col1, col2 = st.columns(2)
@@ -44,8 +52,8 @@ with col1:
     generate_embeddings = st.checkbox(
         t("controls.generate_embeddings"), 
         value=True,
-        disabled=running or not gemini_key_present,
-        help="GEMINI_API_KEY non trouvée dans votre .env" if not gemini_key_present else "Génère un vecteur sémantique pour chaque nouvelle page."
+        disabled=running or not embeddings_enabled,
+        help=help_text or "Génère un vecteur sémantique pour chaque nouvelle page."
     )
 
     workers = st.slider(t("controls.workers"), 1, 20, 5, disabled=running)

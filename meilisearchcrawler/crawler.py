@@ -22,7 +22,6 @@ import argparse
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from tqdm.asyncio import tqdm
 from tqdm import tqdm as tqdm_sync
-from google import genai as gemini
 import trafilatura
 import certifi
 import signal
@@ -33,6 +32,7 @@ from meilisearch_python_sdk.errors import MeilisearchApiError, MeilisearchCommun
 from meilisearch_python_sdk.models.task import TaskInfo
 
 from meilisearchcrawler.cache_db import CacheDB
+from meilisearchcrawler.embeddings import create_embedding_provider, EmbeddingProvider
 
 # ---------------------------
 # Project Structure Setup
@@ -110,8 +110,8 @@ if not config.MEILI_URL or not config.MEILI_KEY:
     logger.error("❌ Les variables d'environnement MEILI_URL et MEILI_KEY doivent être définies.")
     exit(1)
 
-gemini_client = None
-use_embeddings = False
+# Global embedding provider (initialized in main_async)
+embedding_provider: Optional[EmbeddingProvider] = None
 
 # ---------------------------
 # Shutdown Handler
@@ -152,11 +152,16 @@ async def update_meilisearch_settings(index, with_embeddings=False):
     }
 
     if with_embeddings:
-        logger.info("   -> Activation du support des embeddings (vector search)")
+        # Use provider's dimension if available, fallback to config
+        embedding_dim = config.EMBEDDING_DIMENSIONS
+        if embedding_provider and embedding_provider.get_embedding_dim() > 0:
+            embedding_dim = embedding_provider.get_embedding_dim()
+
+        logger.info(f"   -> Activation du support des embeddings (vector search, {embedding_dim}D)")
         settings['embedders'] = {
             "default": {
                 "source": "userProvided",
-                "dimensions": config.EMBEDDING_DIMENSIONS
+                "dimensions": embedding_dim
             }
         }
 
@@ -410,16 +415,18 @@ def extract_images(soup: BeautifulSoup, base_url: str, max_images: int = 5) -> L
     return images
 
 # ---------------------------
-# Gemini Embeddings
+# Embeddings (Multi-Provider)
 # ---------------------------
 def get_embeddings_batch(texts: List[str]) -> Optional[List[List[float]]]:
-    if not gemini_client:
+    """Generate embeddings using the configured provider"""
+    if not embedding_provider or embedding_provider.get_embedding_dim() == 0:
         return None
     try:
-        result = gemini_client.models.embed_content(model=config.EMBEDDING_MODEL, contents=texts)
-        return [embedding.values for embedding in result.embeddings]
+        embeddings = embedding_provider.encode(texts)
+        # Filter out empty embeddings
+        return [emb if emb and len(emb) > 0 else None for emb in embeddings]
     except Exception as e:
-        logger.error(f"Erreur API Gemini: {e}")
+        logger.error(f"Erreur génération embeddings: {e}")
         return None
 
 # ---------------------------
@@ -429,30 +436,36 @@ async def index_documents_batch(index, documents: List[Dict], stats=None):
     if not documents:
         return
     logger.info(f"📦 Indexation de {len(documents)} documents...")
-    if use_embeddings and gemini_client:
-        logger.debug(f"   -> Génération de {len(documents)} embeddings...")
+
+    # Generate embeddings if provider is configured
+    if embedding_provider and embedding_provider.get_embedding_dim() > 0:
+        logger.debug(f"   -> Génération de {len(documents)} embeddings ({embedding_provider.get_provider_name()})...")
         all_embeddings = []
         texts_to_embed = [f"{doc.get('title', '')}\n{doc.get('content', '')}".strip() for doc in documents]
-        for i in range(0, len(texts_to_embed), config.GEMINI_EMBEDDING_BATCH_SIZE):
-            batch_texts = texts_to_embed[i:i + config.GEMINI_EMBEDDING_BATCH_SIZE]
+
+        # Use provider-specific batch size or fallback to GEMINI_EMBEDDING_BATCH_SIZE
+        batch_size = config.GEMINI_EMBEDDING_BATCH_SIZE
+
+        for i in range(0, len(texts_to_embed), batch_size):
+            batch_texts = texts_to_embed[i:i + batch_size]
             batch_embeddings = get_embeddings_batch(batch_texts)
             if batch_embeddings:
                 all_embeddings.extend(batch_embeddings)
             else:
                 all_embeddings.extend([None] * len(batch_texts))
+
         if len(all_embeddings) == len(documents):
-            provider_name = os.getenv('EMBEDDING_PROVIDER', 'gemini')
-            if provider_name == 'snowflake' or provider_name == 'infloat':
-                model_name = os.getenv('EMBEDDING_MODEL', 'intfloat/multilingual-e5-base')
-                embedding_model = model_name.split('/')[-1] if '/' in model_name else model_name
-            else:
-                embedding_model = provider_name
+            provider_name = embedding_provider.get_provider_name()
+            model_name = embedding_provider.get_model_name()
+            embedding_dim = embedding_provider.get_embedding_dim()
+
             for doc, embedding in zip(documents, all_embeddings):
-                if embedding:
+                if embedding and len(embedding) == embedding_dim:
                     doc["_vectors"] = {"default": embedding}
                     doc["embedding_provider"] = provider_name
-                    doc["embedding_model"] = embedding_model
+                    doc["embedding_model"] = model_name
                     doc["embedding_dimensions"] = len(embedding)
+
     try:
         await index.add_documents(documents)
         logger.debug(f"   ✓ {len(documents)} documents indexés")
@@ -917,6 +930,7 @@ async def crawl_json_api_async(context: CrawlContext, index):
 async def crawl_mediawiki_async(context: CrawlContext, index):
     from meilisearchcrawler.mediawiki_crawler import MediaWikiCrawler
     crawler = MediaWikiCrawler(context)
+    use_embeddings = embedding_provider and embedding_provider.get_embedding_dim() > 0
     await crawler.crawl_and_index_progressive(meilisearch_index=index, use_embeddings=use_embeddings, indexing_batch_size=config.INDEXING_BATCH_SIZE)
 
 def parse_arguments():
@@ -927,7 +941,7 @@ def parse_arguments():
     parser.add_argument('--clear-cache', action='store_true', help='Efface le cache')
     parser.add_argument('--stats-only', action='store_true', help='Affiche les stats du cache')
     parser.add_argument('--workers', type=int, default=config.CONCURRENT_REQUESTS, help=f'Nombre de workers (défaut: {config.CONCURRENT_REQUESTS})')
-    parser.add_argument('--embeddings', action='store_true', help='Active la génération d\'embeddings avec Gemini')
+    parser.add_argument('--embeddings', action='store_true', help='Active la génération d\'embeddings (provider configuré dans .env)')
     return parser.parse_args()
 
 def show_cache_stats():
@@ -960,18 +974,23 @@ def clear_cache():
 
 async def main_async():
     args = parse_arguments()
-    global use_embeddings, gemini_client
+    global embedding_provider
+
+    # Initialize embedding provider if requested
     if args.embeddings:
-        if config.GEMINI_API_KEY:
-            logger.info("✨ Activation de la génération d'embeddings avec Google Gemini")
-            use_embeddings = True
-            try:
-                gemini_client = gemini.Client(api_key=config.GEMINI_API_KEY)
-            except Exception as e:
-                logger.error(f"❌ Erreur de configuration de l'API Gemini: {e}")
-                use_embeddings = False
-        else:
-            logger.warning("⚠️  L'option --embeddings est activée mais GEMINI_API_KEY n'est pas définie. Embeddings désactivés.")
+        provider_name = os.getenv('EMBEDDING_PROVIDER', 'gemini')
+        logger.info(f"✨ Activation de la génération d'embeddings (provider: {provider_name})")
+        try:
+            embedding_provider = create_embedding_provider(provider_name)
+            if embedding_provider.get_embedding_dim() == 0:
+                logger.warning("⚠️  Embeddings désactivés - provider non disponible")
+            else:
+                logger.info(f"   ✓ Provider: {embedding_provider.get_provider_name()} ({embedding_provider.get_embedding_dim()}D)")
+                logger.info(f"   ✓ Model: {embedding_provider.get_model_name()}")
+        except Exception as e:
+            logger.error(f"❌ Erreur initialisation provider d'embeddings: {e}")
+            embedding_provider = None
+
     if args.verbose:
         logger.setLevel(logging.DEBUG)
     if args.stats_only:
@@ -991,7 +1010,8 @@ async def main_async():
                 await asyncio.sleep(2)
             index = await client.get_index(config.INDEX_NAME)
             logger.info(f"✅ Index '{config.INDEX_NAME}' prêt")
-            await update_meilisearch_settings(index, with_embeddings=use_embeddings)
+            has_embeddings = embedding_provider and embedding_provider.get_embedding_dim() > 0
+            await update_meilisearch_settings(index, with_embeddings=has_embeddings)
             if args.workers:
                 if args.workers > config.MAX_WORKERS:
                     logger.warning(f"⚠️  Nombre de workers limité de {args.workers} à {config.MAX_WORKERS} (MAX_WORKERS)")
@@ -1017,8 +1037,10 @@ async def main_async():
             logger.info(f"🔄 Mode: {'FORCE RECRAWL' if args.force else 'INCREMENTAL'}")
             logger.info(f"⚡ Workers: {config.CONCURRENT_REQUESTS} requêtes parallèles")
             logger.info(f"📦 Indexation: par lots de {config.INDEXING_BATCH_SIZE} documents")
-            if use_embeddings:
-                logger.info(f"✨ Embeddings: Activés (modèle: {config.EMBEDDING_MODEL})")
+            if embedding_provider and embedding_provider.get_embedding_dim() > 0:
+                logger.info(f"✨ Embeddings: Activés")
+                logger.info(f"   Provider: {embedding_provider.get_provider_name()} ({embedding_provider.get_embedding_dim()}D)")
+                logger.info(f"   Model: {embedding_provider.get_model_name()}")
             logger.info(f"{'=' * 60}\n")
             for i, site in enumerate(sites_to_crawl, 1):
                 global_status.start_site(site['name'])
