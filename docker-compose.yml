@@ -63,6 +63,7 @@ services:
       - "8080:8080"  # API
     environment:
       SERVICE: all
+      LOG_LEVEL: debug
       DASHBOARD_PORT: 8501
       DASHBOARD_HOST: 0.0.0.0
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
@@ -113,8 +114,6 @@ services:
       meilisearch:
         condition: service_healthy
       embeddings_small:
-        condition: service_started
-      embeddings_medium:
         condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]

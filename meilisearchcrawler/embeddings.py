@@ -52,33 +52,15 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             raise RuntimeError(f"Impossible d'initialiser Gemini: {e}")
 
     def encode(self, texts: List[str]) -> List[List[float]]:
-        """Génère des embeddings avec l'API d'inférence Hugging Face"""
+        """Génère des embeddings avec l'API Gemini"""
         try:
-            response = requests.post(
-                self.api_url,
-                json={"inputs": texts, "normalize": True, "truncate": True},
-                headers={"Content-Type": "application/json"},
-                timeout=30  # AJOUTÉ: timeout pour éviter les blocages
+            result = self.client.models.embed_content(
+                model=f"models/{self.model_name}",
+                contents=texts
             )
-            response.raise_for_status()
-            embeddings = response.json()
-
-            # CORRECTION: L'API retourne directement une liste d'embeddings
-            # Pas besoin de validation supplémentaire ici
-            if isinstance(embeddings, list) and len(embeddings) > 0:
-                return embeddings
-            else:
-                logger.error(f"❌ Format de réponse inattendu de l'API: {type(embeddings)}")
-                return [[] for _ in texts]
-
-        except requests.exceptions.Timeout:
-            logger.error(f"⏱️ Timeout lors de la requête à l'API Hugging Face")
-            return [[] for _ in texts]
-        except requests.exceptions.RequestException as e:
-            logger.error(f"❌ Erreur API Hugging Face: {e}")
-            return [[] for _ in texts]
+            return [embedding.values for embedding in result.embeddings]
         except Exception as e:
-            logger.error(f"❌ Erreur lors de l'encodage avec l'API Hugging Face: {e}")
+            logger.error(f"❌ Erreur lors de l'encodage avec Gemini: {e}")
             return [[] for _ in texts]
 
     def get_embedding_dim(self) -> int:
@@ -95,6 +77,7 @@ class HuggingFaceInferenceAPIEmbeddingProvider(EmbeddingProvider):
     """Provider utilisant une API d'inférence Hugging Face (comme text-embeddings-inference)"""
 
     MODEL_DIMENSIONS = {
+        'intfloat/multilingual-e5-small': 384,
         'intfloat/multilingual-e5-base': 768,
         'Snowflake/snowflake-arctic-embed-xs': 384,
         'Snowflake/snowflake-arctic-embed-s': 384,
@@ -121,14 +104,32 @@ class HuggingFaceInferenceAPIEmbeddingProvider(EmbeddingProvider):
             response.raise_for_status()
             info = response.json()
             logger.info(f"✓ Connexion à l'API d'inférence réussie: version {info.get('version')}, modèle {info.get('model_id')}")
-            # Override model_name and embedding_dim with info from API if they don't match
+            # Override model_name with info from API if they don't match
             if self.model_name != info.get('model_id'):
                 logger.warning(f"Le modèle configuré ({self.model_name}) est différent de celui de l'API ({info.get('model_id')}). Utilisation du modèle de l'API.")
                 self.model_name = info.get('model_id')
-            api_dim = info.get('dim')
-            if api_dim is not None and self.embedding_dim != api_dim:
-                logger.warning(f"La dimension configurée ({self.embedding_dim}) est différente de celle de l'API ({api_dim}). Utilisation de la dimension de l'API.")
-                self.embedding_dim = api_dim
+                # Update dimension based on new model name
+                self.embedding_dim = self.MODEL_DIMENSIONS.get(self.model_name, self.embedding_dim)
+
+            # L'API /info ne retourne pas la dimension, donc on fait un test
+            try:
+                test_response = requests.post(
+                    self.api_url,
+                    json={"inputs": ["test"], "normalize": True, "truncate": True},
+                    headers={"Content-Type": "application/json"},
+                    timeout=5
+                )
+                test_response.raise_for_status()
+                test_embeddings = test_response.json()
+                if isinstance(test_embeddings, list) and len(test_embeddings) > 0 and isinstance(test_embeddings[0], list):
+                    detected_dim = len(test_embeddings[0])
+                    if detected_dim != self.embedding_dim:
+                        logger.warning(f"La dimension configurée ({self.embedding_dim}D) est différente de celle détectée ({detected_dim}D). Utilisation de la dimension détectée.")
+                        self.embedding_dim = detected_dim
+                    else:
+                        logger.info(f"✓ Dimension vérifiée: {self.embedding_dim}D")
+            except Exception as e:
+                logger.warning(f"Impossible de vérifier la dimension via un test: {e}. Utilisation de {self.embedding_dim}D")
 
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"Impossible de se connecter à l'API d'inférence Hugging Face sur {self.api_url}: {e}")
@@ -218,7 +219,7 @@ def create_embedding_provider(provider_name: Optional[str] = None) -> EmbeddingP
 
     elif provider_name == 'huggingface':
         model_name = os.getenv('HUGGINGFACE_MODEL', 'intfloat/multilingual-e5-small')
-        api_url = os.getenv('HUGGINGFACE_API_URL', 'http://localhost:8080/embed')
+        api_url = os.getenv('HUGGINGFACE_API_URL', 'http://localhost:8081/embed')
 
         try:
             return HuggingFaceInferenceAPIEmbeddingProvider(model_name=model_name, api_url=api_url)

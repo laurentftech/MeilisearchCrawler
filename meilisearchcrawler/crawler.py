@@ -985,7 +985,7 @@ async def main_async():
             await client.health()
             logger.info("✅ Connexion MeiliSearch réussie")
             indexes = await client.get_indexes()
-            if config.INDEX_NAME not in [i.uid for i in indexes.results]:
+            if config.INDEX_NAME not in [i.uid for i in indexes]:
                 logger.info(f"📦 Création de l'index '{config.INDEX_NAME}'...")
                 await client.create_index(config.INDEX_NAME, primary_key='id')
                 await asyncio.sleep(2)
