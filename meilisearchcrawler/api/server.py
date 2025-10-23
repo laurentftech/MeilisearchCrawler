@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from .routes import health, search
 from .services.meilisearch_client import MeilisearchClient
 from .services.cse_client import CSEClient
+from .services.wiki_client import WikiClient
 from .services.safety import SafetyFilter
 from .services.merger import SearchMerger
 from .services.reranker import HuggingFaceAPIReranker
@@ -81,6 +82,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.critical(f"✗✗✗ CRITICAL: An unexpected error occurred during Meilisearch initialization: {e}")
         app.state.meilisearch_client = None
+
+    # Initialize Wiki Client (optional)
+    wiki_api_url = os.getenv("WIKI_API_URL")
+    if wiki_api_url:
+        logger.info(f"Initializing Wiki client for {wiki_api_url}...")
+        try:
+            wiki_client = WikiClient(api_url=wiki_api_url)
+            app.state.wiki_client = wiki_client
+            logger.info("✓ Wiki client initialized")
+        except Exception as e:
+            logger.warning(f"✗ Failed to initialize Wiki client: {e}")
+            app.state.wiki_client = None
+    else:
+        logger.info("Wiki client not configured.")
+        app.state.wiki_client = None
+
 
     # Initialize Safety Filter
     logger.info("Initializing safety filter...")

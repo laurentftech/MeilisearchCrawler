@@ -70,7 +70,7 @@ else:
             if filter_site != t("tree.all_sites"):
                 params['filter'] = f'site = "{filter_site}"'
             # The new SDK expects a single dictionary argument for parameters
-            documents = index_ref.get_documents(params).results
+            documents = index_ref.get_documents(**params).results
 
         if not documents:
             st.warning(t("tree.no_pages_found"))

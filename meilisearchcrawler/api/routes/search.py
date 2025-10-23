@@ -70,6 +70,7 @@ async def search(
     # Get services from app state
     meilisearch_client = request.app.state.meilisearch_client
     cse_client = request.app.state.cse_client if hasattr(request.app.state, "cse_client") else None
+    wiki_client = request.app.state.wiki_client if hasattr(request.app.state, "wiki_client") else None
 
     # --- Check Meilisearch availability ---
     if not meilisearch_client:
@@ -99,11 +100,13 @@ async def search(
     # Initialize result lists and timing
     meilisearch_results = []
     cse_results = []
+    wiki_results = []
     cache_hit = False
 
     meilisearch_start = time.time()
     meilisearch_time_ms = None
     cse_time_ms = None
+    wiki_time_ms = None
     reranking_time_ms = None
 
     # 1. Search Meilisearch
@@ -112,7 +115,7 @@ async def search(
             query=q,
             lang=lang.value if lang != Language.ALL else None,
             limit=limit * 2,
-            use_hybrid=use_hybrid  # AJOUTÉ: passer le paramètre
+            use_hybrid=use_hybrid
         )
         meilisearch_time_ms = (time.time() - meilisearch_start) * 1000
         logger.info(f"Meilisearch returned {len(meilisearch_results)} results in {meilisearch_time_ms:.2f}ms")
@@ -151,9 +154,25 @@ async def search(
             logger.error(f"CSE search failed: {e}", exc_info=True)
             cse_time_ms = (time.time() - cse_start) * 1000
 
+    # 2b. Search Wiki (if enabled)
+    if wiki_client:
+        wiki_start = time.time()
+        try:
+            wiki_results = await wiki_client.search(
+                query=q,
+                lang=lang.value if lang != Language.ALL else "fr",
+                limit=5  # Limit wiki results
+            )
+            wiki_time_ms = (time.time() - wiki_start) * 1000
+            logger.info(f"Wiki returned {len(wiki_results)} results in {wiki_time_ms:.2f}ms")
+        except Exception as e:
+            logger.error(f"Wiki search failed: {e}", exc_info=True)
+            wiki_time_ms = (time.time() - wiki_start) * 1000
+
     # 3. Apply safety filters
     meilisearch_results = safety_filter.filter_results(meilisearch_results)
     cse_results = safety_filter.filter_results(cse_results)
+    wiki_results = safety_filter.filter_results(wiki_results)
 
     # 4. Merge and deduplicate
     merged_results = merger.merge(
@@ -161,6 +180,8 @@ async def search(
         cse_results=cse_results,
         limit=limit * 2  # Get more for reranking
     )
+    # Prepend wiki results so they appear first
+    merged_results = wiki_results + merged_results
 
     # 5. Apply reranking if enabled
     reranking_applied = False
@@ -189,9 +210,11 @@ async def search(
         total_results=len(final_results),
         meilisearch_results=len(meilisearch_results),
         cse_results=len(cse_results),
+        wiki_results=len(wiki_results),
         processing_time_ms=total_time_ms,
         meilisearch_time_ms=meilisearch_time_ms,
         cse_time_ms=cse_time_ms,
+        wiki_time_ms=wiki_time_ms,
         reranking_time_ms=reranking_time_ms,
         reranking_applied=reranking_applied,
         cache_hit=cache_hit,
@@ -200,7 +223,7 @@ async def search(
     logger.info(
         f"Search completed in {total_time_ms:.2f}ms: "
         f"{stats.total_results} results "
-        f"({stats.meilisearch_results} Meili + {stats.cse_results} CSE)"
+        f"({stats.meilisearch_results} Meili + {stats.cse_results} CSE + {stats.wiki_results} Wiki)"
     )
 
     # Log stats to database
@@ -211,6 +234,7 @@ async def search(
                 lang=lang.value,
                 limit=limit,
                 use_cse=use_cse,
+                use_hybrid=use_hybrid,
                 use_reranking=use_reranking,
                 stats=stats.model_dump(),
             )

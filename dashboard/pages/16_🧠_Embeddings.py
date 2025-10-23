@@ -35,14 +35,16 @@ def get_embedding_stats(force_refresh_key=None):
         total_docs = stats.number_of_documents
 
         if total_docs == 0:
-            return {"total": 0, "with_vectors": 0, "without_vectors": 0, "config_ok": False}
+            return {"total": 0, "with_vectors": 0, "without_vectors": 0, "config_ok": False, "has_default": False, "has_query": False}
 
         # Vérifier la configuration des embedders (syntaxe de la nouvelle SDK)
         settings = index.get_settings()
         embedders = settings.embedders or {}
         has_default = 'default' in embedders
         has_query = 'query' in embedders
-        config_ok = has_default and has_query
+        # Pour cette page, la config est OK si au moins 'default' existe,
+        # car c'est lui qui est utilisé pour l'indexation des documents.
+        config_ok = has_default
 
         # Compter les documents sans embeddings (syntaxe de la nouvelle SDK)
         res = index.search("", filter='_vectors.default NOT EXISTS', limit=0)
@@ -134,13 +136,19 @@ if stats:
     config_ok = stats['config_ok']
 
     if not config_ok:
-        st.error("⚠️ Configuration incomplète des embedders!", icon="🚨")
-        if not stats['has_default']:
-            st.warning("Embedder 'default' manquant")
-        if not stats['has_query']:
-            st.warning("Embedder 'query' manquant")
-        st.info("Exécutez: `python configure_and_check_meilisearch.py` pour configurer les embedders")
+        st.error("⚠️ Configuration des embedders manquante!", icon="🚨")
+        if not stats.get('has_default', False):
+            st.warning("Embedder 'default' manquant. C'est le minimum requis.")
+        st.info("Exécutez: `python configure_meilisearch.py` pour configurer les embedders.")
         st.stop()
+
+    # Avertissement si 'query' est manquant mais que le provider semble être REST
+    if stats.get('has_default') and not stats.get('has_query'):
+        # Heuristique: si 'default' est userProvided, 'query' peut manquer (cas HuggingFace)
+        # Mais si on s'attend à un provider REST, on avertit.
+        # Pour l'instant, on ne peut pas le deviner, donc on ne fait rien pour éviter les faux positifs.
+        pass
+
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric(t("embeddings.total_docs"), f"{total:,}")

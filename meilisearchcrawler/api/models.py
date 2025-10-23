@@ -13,6 +13,7 @@ class SearchSource(str, Enum):
     """Source of search result."""
     MEILISEARCH = "meilisearch"
     GOOGLE_CSE = "google_cse"
+    WIKI = "wiki"
     MERGED = "merged"
 
 
@@ -72,9 +73,11 @@ class SearchStats(BaseModel):
     total_results: int = Field(..., description="Total results returned")
     meilisearch_results: int = Field(default=0, description="Results from Meilisearch")
     cse_results: int = Field(default=0, description="Results from Google CSE")
+    wiki_results: int = Field(default=0, description="Results from Wiki")
     processing_time_ms: float = Field(..., description="Total processing time in ms")
     meilisearch_time_ms: Optional[float] = Field(None, description="Meilisearch query time")
     cse_time_ms: Optional[float] = Field(None, description="CSE query time")
+    wiki_time_ms: Optional[float] = Field(None, description="Wiki query time")
     reranking_time_ms: Optional[float] = Field(None, description="Reranking time")
     reranking_applied: bool = Field(default=False, description="Whether reranking was applied")
     cache_hit: bool = Field(default=False, description="Whether CSE results from cache")
@@ -107,6 +110,7 @@ class SearchResponse(BaseModel):
                     "total_results": 20,
                     "meilisearch_results": 15,
                     "cse_results": 5,
+                    "wiki_results": 2,
                     "processing_time_ms": 245.3,
                     "reranking_applied": True,
                     "cache_hit": False
