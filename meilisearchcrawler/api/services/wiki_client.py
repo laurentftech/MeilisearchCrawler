@@ -1,35 +1,86 @@
+"""
+Client for searching a MediaWiki instance (Vikidia, Wikipedia).
+"""
 
-import httpx
 import logging
-from typing import List, Dict, Any
+from typing import List
+import aiohttp
+import ssl
+import certifi
+import os
+
+from ..models import SearchResult
+
+# Import curl_cffi for Cloudflare bypass
+try:
+    from curl_cffi.requests import AsyncSession as CurlAsyncSession
+    CURL_CFFI_AVAILABLE = True
+except ImportError:
+    CURL_CFFI_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
+# User-Agent for HTTP requests
+USER_AGENT = os.getenv('USER_AGENT', 'KidSearch-Crawler/2.0 (+https://github.com/laurentftech/MeilisearchCrawler)')
+
+
 class WikiClient:
-    """
-    A client for fetching search results from a MediaWiki API (like Wikipedia or Vikidia).
-    """
-    def __init__(self, api_url: str):
-        """
-        Initializes the WikiClient.
+    """A client to search a MediaWiki site like Vikidia."""
 
-        Args:
-            api_url: The base URL of the MediaWiki API (e.g., "https://en.wikipedia.org/w/api.php").
-        """
+    def __init__(self, api_url: str, site_url: str, site_name: str):
         self.api_url = api_url
-        self.client = httpx.AsyncClient(base_url=self.api_url)
+        self.site_url = site_url
+        self.site_name = site_name
+        self.user_agent = USER_AGENT
+        self.ssl_context = ssl.create_default_context(cafile=certifi.where())
 
-    async def search(self, query: str, lang: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def _use_cloudflare_bypass(self) -> bool:
+        """Determines if curl_cffi should be used to bypass Cloudflare."""
+        return CURL_CFFI_AVAILABLE and 'vikidia' in self.site_name.lower()
+
+    async def _fetch_with_curl_cffi(self, params: dict) -> dict:
+        """Makes a request using curl_cffi to bypass Cloudflare."""
+        async with CurlAsyncSession() as session:
+            try:
+                response = await session.get(
+                    self.api_url,
+                    params=params,
+                    impersonate="chrome120",
+                    timeout=10
+                )
+                response.raise_for_status()
+                return response.json()
+            except Exception as e:
+                logger.error(f"HTTP error while searching wiki with curl_cffi: {e}")
+                return {}
+
+    async def _fetch_with_aiohttp(self, params: dict) -> dict:
+        """Makes a request using aiohttp with a proper User-Agent."""
+        headers = {
+            'User-Agent': self.user_agent,
+            'Accept': 'application/json',
+            'Accept-Language': 'fr-FR,fr;q=0.9'
+        }
+        async with aiohttp.ClientSession(headers=headers, connector=aiohttp.TCPConnector(ssl=self.ssl_context)) as session:
+            try:
+                async with session.get(self.api_url, params=params, timeout=10) as response:
+                    response.raise_for_status()
+                    return await response.json()
+            except Exception as e:
+                logger.error(f"HTTP error while searching wiki with aiohttp: {e}")
+                return {}
+
+    async def search(self, query: str, lang: str, limit: int = 5) -> List[SearchResult]:
         """
-        Performs a search on the MediaWiki API.
+        Searches the wiki for a given query.
 
         Args:
             query: The search query.
-            lang: The language code for the search (e.g., "en", "fr").
+            lang: The language of the search (used for result model).
             limit: The maximum number of results to return.
 
         Returns:
-            A list of search result dictionaries.
+            A list of SearchResult objects.
         """
         params = {
             "action": "query",
@@ -38,25 +89,43 @@ class WikiClient:
             "srsearch": query,
             "srlimit": limit,
             "srprop": "snippet|titlesnippet",
-            "origin": "*",
+            "origin": "*"  # Required for CORS
         }
-        try:
-            response = await self.client.get("", params=params)
-            response.raise_for_status()
-            data = response.json()
-            
-            results = []
-            for item in data.get("query", {}).get("search", []):
-                results.append({
-                    "title": item["title"],
-                    "url": f"https://{lang}.vikidia.org/wiki/{item['title'].replace(' ', '_')}",
-                    "snippet": item["snippet"],
-                })
-            return results
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error while searching wiki: {e}")
-            return []
-        except Exception as e:
-            logger.error(f"Error searching wiki: {e}")
+
+        use_cf_bypass = self._use_cloudflare_bypass()
+        if use_cf_bypass:
+            logger.debug(f"Using curl_cffi to search wiki: {self.site_name}")
+            data = await self._fetch_with_curl_cffi(params)
+        else:
+            logger.debug(f"Using aiohttp to search wiki: {self.site_name}")
+            data = await self._fetch_with_aiohttp(params)
+
+        if not data or 'query' not in data or 'search' not in data:
             return []
 
+        results = []
+        for item in data['query']['search']:
+            page_id = item.get("pageid")
+            title = item.get("title")
+            snippet_html = item.get("snippet", "")
+
+            if not all([page_id, title]):
+                continue
+
+            # Construct URL from page ID
+            url = f"{self.site_url}?curid={page_id}"
+
+            results.append(
+                SearchResult(
+                    id=f"wiki_{page_id}",
+                    url=url,
+                    title=title,
+                    excerpt=snippet_html,  # Keep HTML for display
+                    source="wiki",
+                    site=self.site_name,
+                    lang=lang,
+                    score=1.0,  # Default score for wiki results
+                )
+            )
+
+        return results

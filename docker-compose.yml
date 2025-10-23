@@ -106,7 +106,10 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-} # Used if EMBEDDING_PROVIDER is 'gemini'
 
       # --- Wiki API ---
-      WIKI_API_URL: ${WIKI_API_URL:-}
+      WIKI_API_URL: ${WIKI_API_URL:-https://fr.vikidia.org/w/api.php}
+      WIKI_SITE_URL: ${WIKI_SITE_URL:-https://fr.vikidia.org/wiki/}
+      WIKI_SITE_NAME: ${WIKI_SITE_NAME:-Vikidia}
+
     volumes:
       - ./data:/app/data
       - ./.streamlit:/app/.streamlit

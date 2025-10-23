@@ -98,10 +98,14 @@ class Config:
     MAX_CRAWL_DURATION = int(os.getenv('MAX_CRAWL_DURATION', 3600))
     MAX_QUEUE_SIZE = int(os.getenv('MAX_QUEUE_SIZE', 50000))
     MAX_WORKERS = int(os.getenv('MAX_WORKERS', 20))
+    # Patterns to exclude globally from all crawls
     GLOBAL_EXCLUDE_PATTERNS = [
+        # Generic
         '/login', '/logout', '/signin', '/signup', '/register',
         '/cart', '/checkout', '/account', '/share', '/print', '/cdn-cgi/',
-        '/wp-admin/', '/wp-json/', '?rest_route=',
+        # WordPress
+        '/wp-admin/', '/wp-json/', '/wp-login.php', '/wp-cron.php',
+        'xmlrpc.php', '?rest_route=', '?preview=', '/feed/',
     ]
 
 config = Config()

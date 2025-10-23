@@ -85,17 +85,27 @@ async def lifespan(app: FastAPI):
 
     # Initialize Wiki Client (optional)
     wiki_api_url = os.getenv("WIKI_API_URL")
-    if wiki_api_url:
-        logger.info(f"Initializing Wiki client for {wiki_api_url}...")
+    wiki_site_url = os.getenv("WIKI_SITE_URL")
+    wiki_site_name = os.getenv("WIKI_SITE_NAME", "Wiki")
+
+    if wiki_api_url and wiki_site_url:
+        logger.info(f"Initializing Wiki client for {wiki_site_name}...")
         try:
-            wiki_client = WikiClient(api_url=wiki_api_url)
+            wiki_client = WikiClient(
+                api_url=wiki_api_url,
+                site_url=wiki_site_url,
+                site_name=wiki_site_name
+            )
             app.state.wiki_client = wiki_client
             logger.info("✓ Wiki client initialized")
         except Exception as e:
             logger.warning(f"✗ Failed to initialize Wiki client: {e}")
             app.state.wiki_client = None
     else:
-        logger.info("Wiki client not configured.")
+        if wiki_api_url and not wiki_site_url:
+            logger.warning("⚠️ WIKI_API_URL is set but WIKI_SITE_URL is missing. Wiki client not initialized.")
+        else:
+            logger.info("Wiki client not configured.")
         app.state.wiki_client = None
 
 
