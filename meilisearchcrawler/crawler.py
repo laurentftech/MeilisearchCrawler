@@ -57,7 +57,7 @@ load_dotenv(os.path.join(PROJECT_ROOT, '.env'))
 
 logging.basicConfig(
     level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] %(message)s',
+    format='[%(asctime)s] [%(levelname)s] [%(name)s:%(lineno)d] %(message)s',
     handlers=[
         logging.StreamHandler(),
         logging.FileHandler(LOG_FILE_PATH, encoding='utf-8')

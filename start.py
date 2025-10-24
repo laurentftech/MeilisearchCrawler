@@ -26,7 +26,7 @@ load_dotenv()
 log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=log_level_str,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="[%(asctime)s] [%(levelname)s] [%(name)s:%(lineno)d] %(message)s",
 )
 logger = logging.getLogger(__name__)
 
