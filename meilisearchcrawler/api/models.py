@@ -66,7 +66,7 @@ class SearchResult(BaseModel):
     source: SearchSource = Field(..., description="Result source")
     score: float = Field(..., ge=0.0, le=1.0, description="Relevance score (0-1)")
     original_score: Optional[float] = Field(None, description="Score before reranking")
-
+    vectors: Optional[List[float]] = Field(default=None, alias="_vectors", description="Embeddings vectors from Meilisearch")
 
 class SearchStats(BaseModel):
     """Search statistics."""

@@ -94,7 +94,8 @@ services:
       # URL for the reranking service (medium model)
       RERANKER_API_URL: ${RERANKER_API_URL:-http://embeddings_small:80/embed}
       # Reranker model name (for info)
-      RERANKER_MODEL: ${RERANKER_MODEL:-intfloat/multilingual-e5-.env.example small}
+      RERANKER_MODEL: ${RERANKER_MODEL:-intfloat/multilingual-e5-small}
+      RERANKER_BATCH_SIZE: ${RERANKER_BATCH_SIZE:-32}
       
       # Weights for reranking
       MEILISEARCH_WEIGHT: ${MEILISEARCH_WEIGHT:-0.7}

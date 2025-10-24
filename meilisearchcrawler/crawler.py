@@ -30,6 +30,7 @@ import signal
 from meilisearch_python_sdk import AsyncClient
 from meilisearch_python_sdk.errors import MeilisearchApiError, MeilisearchCommunicationError
 from meilisearch_python_sdk.models.task import TaskInfo
+from meilisearch_python_sdk.models.settings import MeilisearchSettings
 
 from meilisearchcrawler.cache_db import CacheDB
 from meilisearchcrawler.embeddings import create_embedding_provider, EmbeddingProvider
@@ -170,7 +171,8 @@ async def update_meilisearch_settings(index, with_embeddings=False):
         }
 
     try:
-        task: TaskInfo = await index.update_settings(settings)
+        settings_model = MeilisearchSettings.model_validate(settings)
+        task: TaskInfo = await index.update_settings(settings_model)
         logger.info(f"   ✓ Paramètres mis à jour (task uid: {task.task_uid})")
     except Exception as e:
         logger.error(f"❌ Échec mise à jour paramètres: {e}")

@@ -45,6 +45,7 @@ class StatsDatabase:
                 limit_requested INTEGER,
                 use_cse BOOLEAN,
                 use_reranking BOOLEAN,
+                use_hybrid BOOLEAN,
                 total_results INTEGER,
                 meilisearch_results INTEGER,
                 cse_results INTEGER,
@@ -91,6 +92,22 @@ class StatsDatabase:
             ON feedback(timestamp)
         """)
 
+        # --- Migration: Add new columns if they are missing ---
+        try:
+            cursor.execute("PRAGMA table_info(search_queries)")
+            columns = [column[1] for column in cursor.fetchall()]
+
+            if 'use_hybrid' not in columns:
+                logger.info("Updating stats.db schema: adding 'use_hybrid' column")
+                cursor.execute("ALTER TABLE search_queries ADD COLUMN use_hybrid BOOLEAN")
+
+            if 'use_reranking' not in columns:
+                logger.info("Updating stats.db schema: adding 'use_reranking' column")
+                cursor.execute("ALTER TABLE search_queries ADD COLUMN use_reranking BOOLEAN")
+
+        except Exception as e:
+            logger.error(f"Failed to migrate stats_db schema: {e}")
+
         conn.commit()
         conn.close()
 
@@ -103,6 +120,7 @@ class StatsDatabase:
         limit: int,
         use_cse: bool,
         use_reranking: bool,
+        use_hybrid: bool,
         stats: Dict[str, Any],
     ):
         """
@@ -114,25 +132,26 @@ class StatsDatabase:
             limit: Limit requested
             use_cse: Whether CSE was used
             use_reranking: Whether reranking was used
+            use_hybrid: Whether hybrid search was used
             stats: Search statistics dict
         """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-
+            
             now = datetime.utcnow()
             timestamp = int(now.timestamp())
 
             cursor.execute("""
                 INSERT INTO search_queries (
-                    query, lang, limit_requested, use_cse, use_reranking,
+                    query, lang, limit_requested, use_cse, use_reranking, use_hybrid,
                     total_results, meilisearch_results, cse_results,
                     processing_time_ms, meilisearch_time_ms, cse_time_ms,
                     reranking_time_ms, reranking_applied, cache_hit,
                     timestamp, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                query, lang, limit, use_cse, use_reranking,
+                query, lang, limit, use_cse, use_reranking, use_hybrid,
                 stats.get("total_results", 0),
                 stats.get("meilisearch_results", 0),
                 stats.get("cse_results", 0),

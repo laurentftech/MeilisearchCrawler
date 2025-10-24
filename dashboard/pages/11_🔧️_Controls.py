@@ -21,7 +21,7 @@ running = is_crawler_running()
 # Si le crawler tourne, afficher un message et un lien vers l'aperçu
 if running:
     st.info(t("controls.crawler_is_running_info"))
-    st.page_link("10_🏠️_Overview.py", label=t("controls.go_to_overview_button"), icon="🏠")
+    st.page_link("pages/10_🏠️_Overview.py", label=t("controls.go_to_overview_button"), icon="🏠")
 
 # Vérifier si un provider d'embedding est configuré
 embedding_provider = os.getenv("EMBEDDING_PROVIDER", "none").lower()

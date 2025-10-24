@@ -29,6 +29,7 @@ class HuggingFaceAPIReranker:
         """
         self.api_url = api_url
         self.model_name = model_name
+        self.batch_size = int(os.getenv("RERANKER_BATCH_SIZE", "32"))
         self._initialized = False
         self.initialize()
 
@@ -72,43 +73,72 @@ class HuggingFaceAPIReranker:
             self._initialized = False
 
     def rerank(self, query: str, results: List[SearchResult], top_k: int) -> List[SearchResult]:
-        """Rerank results using embeddings similarity."""
-        try:
-            # Encoder la requête
-            query_response = requests.post(
-                self.api_url.replace('/rerank', '/embed'),  # Utiliser /embed
-                json={"inputs": [query], "normalize": True},
-                timeout=5
-            )
-            query_response.raise_for_status()
-            query_embedding = query_response.json()[0]
+        """Rerank results using embeddings similarity, using MeiliSearch _vectors if available and caching API calls."""
+        if not self._initialized or not results:
+            return results[:top_k]
 
-            # Encoder tous les documents
-            texts = [f"{r.title} {r.excerpt}" for r in results]
-            docs_response = requests.post(
-                self.api_url.replace('/rerank', '/embed'),
-                json={"inputs": texts, "normalize": True},
+        logger.info(f"Reranking {len(results)} results for query: '{query[:50]}...'")
+        try:
+            # 1️⃣ Obtenir l'embedding de la query via l'API
+            query_response = requests.post(
+                self.api_url,
+                json={"inputs": [query], "normalize": True},
                 timeout=10
             )
-            docs_response.raise_for_status()
-            doc_embeddings = docs_response.json()
+            query_response.raise_for_status()
+            query_embedding = np.array(query_response.json()[0])
 
-            # Calculer similarité cosinus
-            import numpy as np
-            query_vec = np.array(query_embedding)
-            scores = [np.dot(query_vec, np.array(doc_emb)) for doc_emb in doc_embeddings]
+            # 2️⃣ Préparer les embeddings des documents
+            # On sépare les documents qui ont déjà un vecteur de ceux qui n'en ont pas.
+            doc_embeddings = [None] * len(results)
+            texts_to_embed = []
+            indices_to_fill = []
 
-            # Réordonner par score
+            for i, r in enumerate(results):
+                # a) Si _vectors de MeiliSearch est disponible, on l'utilise en priorité
+                if r.vectors and isinstance(r.vectors, list):
+                    doc_embeddings[i] = np.array(r.vectors)
+                else:
+                    # b) Sinon, on prépare le texte pour une requête groupée (batch)
+                    texts_to_embed.append(f"{r.title} {r.excerpt}")
+                    indices_to_fill.append(i)
+
+            # 3️⃣ Si des embeddings sont manquants, on les génère en une seule requête API
+            if texts_to_embed:
+                logger.debug(f"Fetching {len(texts_to_embed)} missing embeddings in one batch...")
+                try:
+                    doc_response = requests.post(
+                        self.api_url,
+                        json={"inputs": texts_to_embed, "normalize": True, "truncate": True},
+                        timeout=20  # Timeout plus long pour les gros batches
+                    )
+                    doc_response.raise_for_status()
+                    generated_embeddings = doc_response.json()
+
+                    # On remplit les "trous" dans notre liste d'embeddings
+                    for i, emb_values in enumerate(generated_embeddings):
+                        original_index = indices_to_fill[i]
+                        doc_embeddings[original_index] = np.array(emb_values)
+                except Exception as api_error:
+                    logger.error(f"API call for batch embeddings failed: {api_error}")
+                    # En cas d'échec, on ne peut pas reranker, on retourne les résultats initiaux
+                    return results[:top_k]
+
+            # 4️⃣ Calculer les similarités cosinus
+            # On filtre les embeddings qui n'ont pas pu être générés
+            scores = [float(np.dot(query_embedding, doc_emb)) if doc_emb is not None else -1.0 for doc_emb in doc_embeddings]
+
+            # 5️⃣ Appliquer le reranking
             for idx, result in enumerate(results):
                 result.original_score = result.score
-                result.score = float(scores[idx])
+                result.score = scores[idx]
 
             results.sort(key=lambda x: x.score, reverse=True)
             return results[:top_k]
 
         except Exception as e:
-            logger.error(f"Reranking failed: {e}")
-            return results[:top_k]  # Fallback sans reranking
+            logger.error(f"Reranking failed: {e}", exc_info=True)
+            return results[:top_k]
 
 # TODO: Implement query expansion
 # - Synonym expansion for children's queries

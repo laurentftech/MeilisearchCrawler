@@ -99,9 +99,7 @@ class MeilisearchClient:
 
             search_params = {
                 "limit": limit,
-                "attributes_to_retrieve": [
-                    "id", "title", "url", "excerpt", "site", "images", "lang", "timestamp", "indexed_at"
-                ],
+                "attributes_to_retrieve": [ "id", "title", "url", "excerpt", "site", "images", "lang", "timestamp", "indexed_at", "_vectors"],
                 "attributes_to_search_on": ["title", "excerpt"],
                 "show_ranking_score": True,
             }
@@ -148,6 +146,7 @@ class MeilisearchClient:
                     lang=hit.get("lang"),
                     timestamp=hit.get("timestamp"),
                     indexed_at=hit.get("indexed_at"),
+                    vectors=hit.get("_vectors", None),
                     source=SearchSource.MEILISEARCH,
                     score=score,
                 )
