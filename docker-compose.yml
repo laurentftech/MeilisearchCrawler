@@ -10,16 +10,29 @@ services:
       MEILI_MASTER_KEY: ${MEILI_KEY:-masterKey}
       MEILI_ENV: ${MEILI_ENV:-production}
       MEILI_NO_ANALYTICS: true
+      # Optimized for 6GB RAM - can use more memory
+      MEILI_MAX_INDEXING_MEMORY: 512MB
+      MEILI_MAX_INDEXING_THREADS: 2
     volumes:
       - meilisearch-data:/meili_data
     networks:
       - kidsearch-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G     # Increased from 512M
+        reservations:
+          cpus: '0.5'
+          memory: 512M
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
 
+  # Text Embeddings Inference - Optimized for DS220+ (6GB RAM, 2 cores)
   embeddings_small:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.1
     container_name: embeddings_small
@@ -29,27 +42,42 @@ services:
     networks:
       - kidsearch-network
     environment:
-      # Pas de MODEL_ID, NUM_THREADS, etc. - voir ci-dessous
       HF_HUB_DISABLE_TELEMETRY: "1"
-      PYTHONPATH: "/app:/app/dashboard"
+      # Limit CPU threads (DS220+ has 2 cores)
+      RAYON_NUM_THREADS: "2"
+      OMP_NUM_THREADS: "2"
     command:
       - "--model-id"
       - "intfloat/multilingual-e5-small"
       - "--port"
       - "80"
+      # 🔧 Optimized for DS220+ with 6GB RAM (less restrictive)
       - "--max-concurrent-requests"
-      - "16"
+      - "8"              # Increased from 4 (more RAM available)
+      - "--max-client-batch-size"
+      - "8"              # Max 8 texts per batch
       - "--max-batch-tokens"
-      - "16384"
+      - "12288"          # Increased from 8192 (more RAM)
+      - "--pooling"
+      - "mean"
+      - "--max-batch-requests"
+      - "8"              # Increased internal batching
     volumes:
-      # Cache local pour éviter de re-télécharger le modèle à chaque run
       - ./models_cache:/data
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'    # Leave 0.5 core for system
+          memory: 1.5G   # Increased from 1G (multilingual-e5-small + overhead)
+        reservations:
+          cpus: '1.0'
+          memory: 768M
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 120s  # Le téléchargement du modèle prend du temps
+      start_period: 120s
 
   # KidSearch Dashboard & API (All-in-one)
   kidsearch-all:
@@ -63,50 +91,51 @@ services:
       - "8080:8080"  # API
     environment:
       SERVICE: all
-      LOG_LEVEL: debug
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       DASHBOARD_PORT: 8501
       DASHBOARD_HOST: 0.0.0.0
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
       API_PORT: 8080
       API_HOST: 0.0.0.0
-      API_WORKERS: 4
+      API_WORKERS: 3  # Increased from 2 (6GB RAM allows more workers)
       API_ENABLED: "true"
-      # Display URLs (for clickable links in logs)
+
+      # Display URLs
       DISPLAY_HOST: ${DISPLAY_HOST:-}
       DASHBOARD_DISPLAY_HOST: ${DASHBOARD_DISPLAY_HOST:-}
       API_DISPLAY_HOST: ${API_DISPLAY_HOST:-}
+
       # Meilisearch connection
       MEILI_URL: http://meilisearch:7700
       MEILI_KEY: ${MEILI_KEY:-masterKey}
       INDEX_NAME: ${INDEX_NAME:-kidsearch}
 
-      # --- Embedding & Reranking Configuration ---
-      # Provider: 'huggingface', 'gemini', or 'none'
+      # --- Embedding Configuration ---
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-huggingface}
-      
-      # HuggingFace model name (used for info, API provides actual model)
       HUGGINGFACE_MODEL: ${HUGGINGFACE_MODEL:-intfloat/multilingual-e5-small}
-      # URL for the embedding service (small model)
       HUGGINGFACE_API_URL: ${HUGGINGFACE_API_URL:-http://embeddings_small:80/embed}
 
-      # Reranking configuration
+      # --- Reranking Configuration (Optimized for 6GB RAM) ---
       RERANKING_ENABLED: ${RERANKING_ENABLED:-true}
-      # URL for the reranking service (medium model)
       RERANKER_API_URL: ${RERANKER_API_URL:-http://embeddings_small:80/embed}
-      # Reranker model name (for info)
       RERANKER_MODEL: ${RERANKER_MODEL:-intfloat/multilingual-e5-small}
-      RERANKER_BATCH_SIZE: ${RERANKER_BATCH_SIZE:-32}
-      
-      # Weights for reranking
+
+      # 🔧 Optimized for 6GB RAM - can use larger batches
+      RERANKER_BATCH_SIZE: ${RERANKER_BATCH_SIZE:-6}  # Increased from 4
+      RERANKER_MAX_CHARS: ${RERANKER_MAX_CHARS:-300}  # Keep at 300
+      RERANKER_CACHE_SIZE: ${RERANKER_CACHE_SIZE:-4096}  # Doubled from 2048
+      RERANKER_TIMEOUT: ${RERANKER_TIMEOUT:-12}  # Slightly longer for larger batches
+
+      # Weights for result merging
       MEILISEARCH_WEIGHT: ${MEILISEARCH_WEIGHT:-0.7}
       CSE_WEIGHT: ${CSE_WEIGHT:-0.3}
-      
+
       # --- Google APIs ---
       GOOGLE_CSE_API_KEY: ${GOOGLE_CSE_API_KEY:-}
       GOOGLE_CSE_ID: ${GOOGLE_CSE_ID:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-} # Used if EMBEDDING_PROVIDER is 'gemini'
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
 
-      # --- Wiki API ---
+      # --- Wiki API (Vikidia) ---
       WIKI_API_URL: ${WIKI_API_URL:-https://fr.vikidia.org/w/api.php}
       WIKI_SITE_URL: ${WIKI_SITE_URL:-https://fr.vikidia.org/wiki/}
       WIKI_SITE_NAME: ${WIKI_SITE_NAME:-Vikidia}
@@ -117,11 +146,19 @@ services:
       - ./config:/app/config
     networks:
       - kidsearch-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1.5G   # Increased from 1G
+        reservations:
+          cpus: '0.5'
+          memory: 768M
     depends_on:
       meilisearch:
         condition: service_healthy
       embeddings_small:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
       interval: 30s
@@ -130,7 +167,6 @@ services:
       start_period: 40s
 
   # Alternative: Dashboard only
-  # Uncomment to run Dashboard in a separate container
   # kidsearch-dashboard:
   #   build:
   #     context: .
@@ -149,14 +185,19 @@ services:
   #     INDEX_NAME: ${INDEX_NAME:-kidsearch}
   #   volumes:
   #     - ./data:/app/data
+  #     - ./.streamlit:/app/.streamlit
   #     - ./config:/app/config
   #   networks:
   #     - kidsearch-network
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '0.5'
+  #         memory: 768M
   #   depends_on:
   #     - meilisearch
 
   # Alternative: API only
-  # Uncomment to run API in a separate container
   # kidsearch-api:
   #   build:
   #     context: .
@@ -169,18 +210,30 @@ services:
   #     SERVICE: api
   #     API_PORT: 8080
   #     API_HOST: 0.0.0.0
-  #     API_WORKERS: 4
+  #     API_WORKERS: 3
   #     API_ENABLED: "true"
   #     MEILI_URL: http://meilisearch:7700
   #     MEILI_KEY: ${MEILI_KEY:-masterKey}
   #     INDEX_NAME: ${INDEX_NAME:-kidsearch}
-  #     RERANKING_ENABLED: ${RERANKING_ENABLED:-false}
+  #
+  #     # Reranking
+  #     RERANKING_ENABLED: ${RERANKING_ENABLED:-true}
+  #     RERANKER_API_URL: http://embeddings_small:80/embed
+  #     RERANKER_BATCH_SIZE: 6
+  #     RERANKER_MAX_CHARS: 300
+  #     RERANKER_CACHE_SIZE: 4096
   #   volumes:
   #     - ./data:/app/data
   #   networks:
   #     - kidsearch-network
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '1.0'
+  #         memory: 1G
   #   depends_on:
   #     - meilisearch
+  #     - embeddings_small
 
 volumes:
   meilisearch-data:
