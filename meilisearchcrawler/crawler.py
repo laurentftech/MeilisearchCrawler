@@ -96,6 +96,7 @@ class Config:
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-004")
     EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", 768))
     GEMINI_EMBEDDING_BATCH_SIZE = int(os.getenv("GEMINI_EMBEDDING_BATCH_SIZE", 100))
+    HUGGINGFACE_EMBEDDING_BATCH_SIZE = int(os.getenv("HUGGINGFACE_EMBEDDING_BATCH_SIZE", 16))
     MAX_CRAWL_DURATION = int(os.getenv('MAX_CRAWL_DURATION', 3600))
     MAX_QUEUE_SIZE = int(os.getenv('MAX_QUEUE_SIZE', 50000))
     MAX_WORKERS = int(os.getenv('MAX_WORKERS', 20))
@@ -445,12 +446,18 @@ async def index_documents_batch(index, documents: List[Dict], stats=None):
 
     # Generate embeddings if provider is configured
     if embedding_provider and embedding_provider.get_embedding_dim() > 0:
-        logger.debug(f"   -> Génération de {len(documents)} embeddings ({embedding_provider.get_provider_name()})...")
+        provider_name = embedding_provider.get_provider_name()
+        logger.debug(f"   -> Génération de {len(documents)} embeddings ({provider_name})...")
         all_embeddings = []
         texts_to_embed = [f"{doc.get('title', '')}\n{doc.get('content', '')}".strip() for doc in documents]
 
-        # Use provider-specific batch size or fallback to GEMINI_EMBEDDING_BATCH_SIZE
-        batch_size = config.GEMINI_EMBEDDING_BATCH_SIZE
+        # Use provider-specific batch size
+        if provider_name == 'gemini':
+            batch_size = config.GEMINI_EMBEDDING_BATCH_SIZE
+        elif provider_name == 'huggingface':
+            batch_size = config.HUGGINGFACE_EMBEDDING_BATCH_SIZE
+        else:
+            batch_size = 16 # Fallback for other potential providers
 
         for i in range(0, len(texts_to_embed), batch_size):
             batch_texts = texts_to_embed[i:i + batch_size]
@@ -461,7 +468,6 @@ async def index_documents_batch(index, documents: List[Dict], stats=None):
                 all_embeddings.extend([None] * len(batch_texts))
 
         if len(all_embeddings) == len(documents):
-            provider_name = embedding_provider.get_provider_name()
             model_name = embedding_provider.get_model_name()
             embedding_dim = embedding_provider.get_embedding_dim()
 
