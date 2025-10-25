@@ -50,13 +50,9 @@ def get_embedding_stats(force_refresh_key=None):
         return None
     try:
         index = client.index(INDEX_NAME)
-        stats = index.get_stats()
-        total_docs = stats.number_of_documents
-
-        if total_docs == 0:
-            return {"total": 0, "with_vectors": 0, "without_vectors": 0, "config_ok": False, "has_default": False, "has_query": False}
 
         # Vérifier la configuration des embedders (syntaxe de la nouvelle SDK)
+        # Cette vérification doit avoir lieu même si l'index est vide.
         settings = index.get_settings()
         embedders = settings.embedders or {}
         has_default = 'default' in embedders
@@ -64,6 +60,14 @@ def get_embedding_stats(force_refresh_key=None):
         # Pour cette page, la config est OK si au moins 'default' existe,
         # car c'est lui qui est utilisé pour l'indexation des documents.
         config_ok = has_default
+
+        # Récupérer les statistiques de l'index
+        stats = index.get_stats()
+        total_docs = stats.number_of_documents
+
+        if total_docs == 0:
+            # Retourner les informations de configuration même si l'index est vide
+            return {"total": 0, "with_vectors": 0, "without_vectors": 0, "config_ok": config_ok, "has_default": has_default, "has_query": has_query}
 
         # Compter les documents sans embeddings (syntaxe de la nouvelle SDK)
         res = index.search("", filter='_vectors.default NOT EXISTS', limit=0)
@@ -205,7 +209,7 @@ if stats:
             st.button(
                 t("embeddings.generate_button") + f" ({without_vectors:,} documents)",
                 on_click=run_embedding_process,
-                disabled=process_running,
+                disabled=process_running or without_vectors == 0,
                 type="primary",
                 width='stretch'
             )

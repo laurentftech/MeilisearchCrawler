@@ -184,16 +184,23 @@ with tab2:
     if st.button("🧠 Configure Embeddings", type="primary"):
         with st.spinner("Configuring embeddings..."):
             try:
-                # 1. Enable vector store feature
-                st.info("Enabling vector store feature...")
-                headers = {
-                    "Authorization": f"Bearer {MEILI_KEY}",
-                    "Content-Type": "application/json"
-                }
-                payload = {"vectorStore": True}
-                r = requests.patch(f"{MEILI_URL}/experimental-features", json=payload, headers=headers)
-                r.raise_for_status()
-                st.success("✅ Vector store feature enabled.")
+                # 1. Try to enable vector store feature, but don't fail if it's deprecated
+                if embedding_provider != "None":
+                    st.info("Enabling vector store feature...")
+                    try:
+                        headers = {
+                            "Authorization": f"Bearer {MEILI_KEY}",
+                            "Content-Type": "application/json"
+                        }
+                        payload = {"vectorStore": True}
+                        r = requests.patch(f"{MEILI_URL}/experimental-features", json=payload, headers=headers)
+                        r.raise_for_status()
+                        st.success("✅ Vector store feature enabled.")
+                    except requests.exceptions.HTTPError as e:
+                        if e.response.status_code in [400, 404]:
+                            st.warning(f"⚠️ Could not enable experimental features (status: {e.response.status_code}). This is expected on recent Meilisearch versions. Continuing...")
+                        else:
+                            raise e # Re-raise other HTTP errors
 
                 # 2. Configure embedders
                 index = client.index(INDEX_NAME)

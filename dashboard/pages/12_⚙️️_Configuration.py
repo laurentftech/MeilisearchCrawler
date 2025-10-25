@@ -19,9 +19,30 @@ sites_config = load_sites_config()
 if sites_config is None:
     st.error(t("config.error_loading"))
 else:
-    tab1, tab2 = st.tabs([t("config.tab_editor"), t("config.tab_preview")])
+    tab1, tab2 = st.tabs([t("config.tab_preview"), t("config.tab_editor")])
 
     with tab1:
+        if 'sites' in sites_config:
+            st.subheader(t("config.preview_title").format(count=len(sites_config['sites'])))
+
+            for site in sites_config['sites']:
+                with st.expander(f"🌐 {site.get('name', t('config.site_name_undefined'))}"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"{t('config.site_type')} `{site.get('type')}`")
+                        st.write(f"{t('config.site_url')} {site.get('crawl')}")
+                        st.write(f"{t('config.site_max_pages')} {site.get('max_pages', t('config.unlimited'))}")
+                    with col2:
+                        st.write(f"{t('config.site_depth')} {site.get('depth', t('config.unlimited_depth'))}")
+                        st.write(f"{t('config.site_delay')} {site.get('delay', t('config.auto_delay'))}s")
+                        if 'lang' in site:
+                            st.write(f"{t('config.site_lang')} `{site.get('lang')}`")
+
+                    if site.get('exclude'):
+                        st.write(t("config.exclusions"))
+                        st.code('\n'.join(site['exclude']), language='text')
+
+    with tab2:
         st.info(t("config.info_edit"))
 
         try:
@@ -59,23 +80,4 @@ else:
             if st.button(t("config.reset_button"), disabled=running):
                 st.rerun()
 
-    with tab2:
-        if 'sites' in sites_config:
-            st.subheader(t("config.preview_title").format(count=len(sites_config['sites'])))
 
-            for site in sites_config['sites']:
-                with st.expander(f"🌐 {site.get('name', t('config.site_name_undefined'))}"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write(f"{t('config.site_type')} `{site.get('type')}`")
-                        st.write(f"{t('config.site_url')} {site.get('crawl')}")
-                        st.write(f"{t('config.site_max_pages')} {site.get('max_pages', t('config.unlimited'))}")
-                    with col2:
-                        st.write(f"{t('config.site_depth')} {site.get('depth', t('config.unlimited_depth'))}")
-                        st.write(f"{t('config.site_delay')} {site.get('delay', t('config.auto_delay'))}s")
-                        if 'lang' in site:
-                            st.write(f"{t('config.site_lang')} `{site.get('lang')}`")
-
-                    if site.get('exclude'):
-                        st.write(t("config.exclusions"))
-                        st.code('\n'.join(site['exclude']), language='text')
