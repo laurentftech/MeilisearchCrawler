@@ -2,6 +2,7 @@
 Search endpoints.
 """
 
+import asyncio
 import logging
 import time
 import os
@@ -102,77 +103,116 @@ async def search(
     cse_results = []
     wiki_results = []
     cache_hit = False
-
-    meilisearch_start = time.time()
-    meilisearch_time_ms = None
-    cse_time_ms = None
-    wiki_time_ms = None
     reranking_time_ms = None
 
-    # 1. Search Meilisearch
-    try:
-        meilisearch_results = await meilisearch_client.search(
-            query=q,
-            lang=lang.value if lang != Language.ALL else None,
-            limit=limit * 2,
-            use_hybrid=use_hybrid
-        )
-        meilisearch_time_ms = (time.time() - meilisearch_start) * 1000
-        logger.info(f"Meilisearch returned {len(meilisearch_results)} results in {meilisearch_time_ms:.2f}ms")
-    except MeilisearchApiError as e:
-        meilisearch_time_ms = (time.time() - meilisearch_start) * 1000
-        logger.error(f"Meilisearch API error: {e}", exc_info=True)
-        if e.code == "invalid_search_filter":
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    "Meilisearch index is not configured correctly. "
-                    "Filterable attributes are missing. "
-                    "Please run the crawler once (`python crawler.py`) to apply settings."
-                ),
-            )
-        # For other Meilisearch errors, continue without results
-    except Exception as e:
-        logger.error(f"Meilisearch search failed: {e}", exc_info=True)
-        meilisearch_time_ms = (time.time() - meilisearch_start) * 1000
-
-    # 2. Search Google CSE (if enabled and configured)
-    if use_cse and CSE_CONFIGURED and cse_client:
-        cse_start = time.time()
+    # Helper functions for parallel search execution
+    async def search_meilisearch():
+        """Search Meilisearch with error handling and timing."""
+        start = time.time()
         try:
-            cse_results, cache_hit = await cse_client.search(
+            results = await meilisearch_client.search(
+                query=q,
+                lang=lang.value if lang != Language.ALL else None,
+                limit=limit * 2,
+                use_hybrid=use_hybrid
+            )
+            elapsed_ms = (time.time() - start) * 1000
+            logger.info(f"Meilisearch returned {len(results)} results in {elapsed_ms:.2f}ms")
+            return results, elapsed_ms, None
+        except MeilisearchApiError as e:
+            elapsed_ms = (time.time() - start) * 1000
+            logger.error(f"Meilisearch API error: {e}", exc_info=True)
+            if e.code == "invalid_search_filter":
+                return [], elapsed_ms, HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=(
+                        "Meilisearch index is not configured correctly. "
+                        "Filterable attributes are missing. "
+                        "Please run the crawler once (`python crawler.py`) to apply settings."
+                    ),
+                )
+            return [], elapsed_ms, None
+        except Exception as e:
+            elapsed_ms = (time.time() - start) * 1000
+            logger.error(f"Meilisearch search failed: {e}", exc_info=True)
+            return [], elapsed_ms, None
+
+    async def search_cse():
+        """Search Google CSE with error handling and timing."""
+        if not (use_cse and CSE_CONFIGURED and cse_client):
+            return [], None, False
+
+        start = time.time()
+        try:
+            results, hit = await cse_client.search(
                 query=q,
                 lang=lang.value if lang != Language.ALL else "fr",
                 num_results=min(limit, 10)  # CSE max 10 per request
             )
-            cse_time_ms = (time.time() - cse_start) * 1000
+            elapsed_ms = (time.time() - start) * 1000
             logger.info(
-                f"CSE returned {len(cse_results)} results in {cse_time_ms:.2f}ms "
-                f"(cache_hit={cache_hit})"
+                f"CSE returned {len(results)} results in {elapsed_ms:.2f}ms "
+                f"(cache_hit={hit})"
             )
+            return results, elapsed_ms, hit
         except Exception as e:
+            elapsed_ms = (time.time() - start) * 1000
             logger.error(f"CSE search failed: {e}", exc_info=True)
-            cse_time_ms = (time.time() - cse_start) * 1000
+            return [], elapsed_ms, False
 
-    # 2b. Search Wiki (if enabled)
-    if wiki_client:
-        wiki_start = time.time()
+    async def search_wiki():
+        """Search Wiki with error handling and timing."""
+        if not wiki_client:
+            return [], None
+
+        start = time.time()
         try:
-            wiki_results = await wiki_client.search(
+            results = await wiki_client.search(
                 query=q,
                 lang=lang.value if lang != Language.ALL else "fr",
                 limit=5  # Limit wiki results
             )
-            wiki_time_ms = (time.time() - wiki_start) * 1000
-            logger.info(f"Wiki returned {len(wiki_results)} results in {wiki_time_ms:.2f}ms")
+            elapsed_ms = (time.time() - start) * 1000
+            logger.info(f"Wiki returned {len(results)} results in {elapsed_ms:.2f}ms")
+            return results, elapsed_ms
         except Exception as e:
+            elapsed_ms = (time.time() - start) * 1000
             logger.error(f"Wiki search failed: {e}", exc_info=True)
-            wiki_time_ms = (time.time() - wiki_start) * 1000
+            return [], elapsed_ms
 
-    # 3. Apply safety filters
-    meilisearch_results = safety_filter.filter_results(meilisearch_results)
-    cse_results = safety_filter.filter_results(cse_results)
-    wiki_results = safety_filter.filter_results(wiki_results)
+    # Execute all searches in parallel
+    parallel_start = time.time()
+    meili_task, cse_task, wiki_task = await asyncio.gather(
+        search_meilisearch(),
+        search_cse(),
+        search_wiki(),
+        return_exceptions=False
+    )
+    parallel_time_ms = (time.time() - parallel_start) * 1000
+
+    # Unpack results
+    meilisearch_results, meilisearch_time_ms, meili_error = meili_task
+    cse_results, cse_time_ms, cache_hit = cse_task
+    wiki_results, wiki_time_ms = wiki_task
+
+    # Check for critical Meilisearch errors
+    if meili_error:
+        raise meili_error
+
+    logger.info(f"Parallel search completed in {parallel_time_ms:.2f}ms (fastest: {min(filter(None, [meilisearch_time_ms, cse_time_ms, wiki_time_ms])):.2f}ms)")
+
+    # 3. Apply safety filters in parallel
+    async def filter_async(results, name):
+        """Async wrapper for synchronous filter_results."""
+        filtered = safety_filter.filter_results(results)
+        logger.debug(f"{name}: filtered {len(results)} -> {len(filtered)} results")
+        return filtered
+
+    meilisearch_results, cse_results, wiki_results = await asyncio.gather(
+        filter_async(meilisearch_results, "Meilisearch"),
+        filter_async(cse_results, "CSE"),
+        filter_async(wiki_results, "Wiki"),
+    )
 
     # 4. Merge and deduplicate
     merged_results = merger.merge(

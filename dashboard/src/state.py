@@ -4,7 +4,7 @@ import subprocess
 import sys
 import streamlit as st
 
-from .config import PID_FILE, CRAWLER_SCRIPT, CACHE_FILE
+from .config import PID_FILE, CRAWLER_SCRIPT
 
 def is_crawler_running():
     """Checks if the crawler process is currently running."""
@@ -59,13 +59,16 @@ def stop_crawler():
             os.remove(PID_FILE)
 
 def clear_cache():
-    """Deletes the crawler's cache file. Returns True on success, False if no cache existed."""
-    if os.path.exists(CACHE_FILE):
-        try:
-            os.remove(CACHE_FILE)
+    """Clears the crawler's cache by running the crawler script with --clear-cache."""
+    try:
+        python_executable = sys.executable
+        cmd = [python_executable, CRAWLER_SCRIPT, "--clear-cache"]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode == 0:
             return True
-        except Exception as e:
-            st.error(f"Erreur lors de la suppression du cache: {e}")
+        else:
+            st.error(f"Erreur lors du nettoyage du cache: {result.stderr or result.stdout}")
             return False
-    else:
+    except Exception as e:
+        st.error(f"Erreur lors de l\'exécution de la commande de nettoyage du cache: {e}")
         return False

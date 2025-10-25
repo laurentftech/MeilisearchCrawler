@@ -29,18 +29,6 @@ class HuggingFaceAPIReranker:
         # Increase cache for better hit rate
         self._embedding_cache = LRUCache(maxsize=int(os.getenv("RERANKER_CACHE_SIZE", "2048")))
 
-        # Educational domains for KidSearch boost
-        self.kid_friendly_domains = [
-            'vikidia.org',
-            'wikipedia.org',
-            'wikimini.org',
-            'kiddle.co',
-            'education.fr',
-            'lumni.fr',
-            '1jour1actu.com',
-            'jeuxpedago.com',
-        ]
-
         self.initialize()
 
     def initialize(self):
@@ -95,8 +83,8 @@ class HuggingFaceAPIReranker:
 
     def _get_embeddings_batch(self, texts: List[str]) -> List[Optional[np.ndarray]]:
         """
-        Get embeddings for multiple texts in a single API call.
-        This is the CORRECT way to use TEI batch API.
+        Get embeddings for multiple texts in batches respecting batch_size.
+        Prevents 413 Payload Too Large errors.
         """
         if not texts:
             return []
@@ -119,33 +107,40 @@ class HuggingFaceAPIReranker:
             logger.debug(f"All {len(texts)} embeddings from cache")
             return results
 
-        # Batch API call for uncached texts
-        try:
-            logger.debug(f"Fetching {len(uncached_texts)} embeddings (batch)")
-            response = requests.post(
-                self.api_url,
-                json={
-                    "inputs": uncached_texts,
-                    "normalize": True,
-                    "truncate": True
-                },
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            embeddings = response.json()
+        # Process uncached texts in batches to avoid payload size errors
+        logger.debug(f"Fetching {len(uncached_texts)} embeddings in batches of {self.batch_size}")
 
-            # Store in cache and results
-            for idx, emb_list in zip(uncached_indices, embeddings):
-                emb = np.array(emb_list, dtype=np.float32)  # float32 saves memory
-                self._embedding_cache[texts[idx]] = emb
-                results[idx] = emb
+        for batch_start in range(0, len(uncached_texts), self.batch_size):
+            batch_end = min(batch_start + self.batch_size, len(uncached_texts))
+            batch_texts = uncached_texts[batch_start:batch_end]
+            batch_indices = uncached_indices[batch_start:batch_end]
 
-            logger.debug(f"Successfully embedded {len(uncached_texts)} texts")
+            try:
+                logger.debug(f"Batch {batch_start//self.batch_size + 1}: embedding {len(batch_texts)} texts")
+                response = requests.post(
+                    self.api_url,
+                    json={
+                        "inputs": batch_texts,
+                        "normalize": True,
+                        "truncate": True
+                    },
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                embeddings = response.json()
 
-        except requests.Timeout:
-            logger.warning(f"TEI batch timeout ({self.timeout}s) for {len(uncached_texts)} texts")
-        except Exception as e:
-            logger.error(f"TEI batch embedding failed: {e}")
+                # Store in cache and results
+                for idx, emb_list in zip(batch_indices, embeddings):
+                    emb = np.array(emb_list, dtype=np.float32)  # float32 saves memory
+                    self._embedding_cache[texts[idx]] = emb
+                    results[idx] = emb
+
+                logger.debug(f"Successfully embedded batch of {len(batch_texts)} texts")
+
+            except requests.Timeout:
+                logger.warning(f"TEI batch timeout ({self.timeout}s) for {len(batch_texts)} texts")
+            except Exception as e:
+                logger.error(f"TEI batch embedding failed for batch: {e}")
 
         return results
 
@@ -253,14 +248,7 @@ class HuggingFaceAPIReranker:
                     results[i].original_score = results[i].score
                     results[i].score = results[i].score * 0.3
 
-            # 6️⃣ KidSearch boost for educational content
-            boost_count = 0
-            for r in results:
-                if self._is_kid_friendly(r):
-                    r.score *= 1.15
-                    boost_count += 1
-
-            # 7️⃣ Sort and limit
+            # 6️⃣ Sort and limit
             results.sort(key=lambda x: x.score, reverse=True)
 
             # Log metrics
@@ -272,7 +260,6 @@ class HuggingFaceAPIReranker:
                 f"Reranking done in {elapsed_ms:.1f}ms: "
                 f"cache_hits={cache_hits}/{len(results)} ({cache_rate:.1f}%), "
                 f"api_calls={api_calls}, "
-                f"kid_boost={boost_count}, "
                 f"avg_score_Δ={avg_change:.3f}"
             )
 
@@ -281,10 +268,5 @@ class HuggingFaceAPIReranker:
         except Exception as e:
             logger.error(f"Reranking failed: {e}", exc_info=True)
             return results[:top_k]
-
-    def _is_kid_friendly(self, result: SearchResult) -> bool:
-        """Check if result is from educational/kid-friendly domain."""
-        url_lower = str(result.url).lower()  # ✅ FIXED
-        return any(domain in url_lower for domain in self.kid_friendly_domains)
 
 
