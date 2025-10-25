@@ -981,6 +981,7 @@ def clear_cache():
 async def main_async():
     args = parse_arguments()
     global embedding_provider
+    global_status = None
 
     # Initialize embedding provider if requested
     if args.embeddings:
@@ -1004,6 +1005,7 @@ async def main_async():
         return
     if args.clear_cache:
         clear_cache()
+        return
     
     async with AsyncClient(config.MEILI_URL, config.MEILI_KEY) as client:
         try:
@@ -1079,14 +1081,15 @@ async def main_async():
                     logger.info("⏸️  Pause de 5 secondes avant le prochain site...\n")
                     await asyncio.sleep(5)
         finally:
-            total_duration = time.time() - (global_status.start_time or time.time())
-            global_status.stop()
-            logger.info(f"\n{'=' * 60}")
-            logger.info(f"🎉 Crawl terminé !")
-            logger.info(f"{'=' * 60}")
-            logger.info(f"⏱️  Durée totale: {total_duration / 60:.2f} minutes")
-            logger.info(f"{'=' * 60}\n")
-            show_cache_stats()
+            if global_status:
+                total_duration = time.time() - (global_status.start_time or time.time())
+                global_status.stop()
+                logger.info(f"\n{'=' * 60}")
+                logger.info(f"🎉 Crawl terminé !")
+                logger.info(f"{'=' * 60}")
+                logger.info(f"⏱️  Durée totale: {total_duration / 60:.2f} minutes")
+                logger.info(f"{'=' * 60}\n")
+                show_cache_stats()
 
 def main():
     try:

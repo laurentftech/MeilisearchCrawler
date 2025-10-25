@@ -35,6 +35,15 @@ try:
     if stats.number_of_documents == 0:
         st.warning(t("search.warning_no_documents"))
         st.stop()
+except MeilisearchApiError as e:
+    if e.code == "index_not_found":
+        st.warning(f"⚠️ L'index '{INDEX_NAME}' n'existe pas.")
+        st.info("Veuillez le créer pour pouvoir effectuer une recherche.")
+        st.page_link("pages/18_☁️_Meilisearch_Server.py", label="Aller à la configuration du serveur", icon="☁️")
+        st.stop()
+    else:
+        st.error(f"{t('search.error_index_access')}: {e}")
+        st.stop()
 except Exception as e:
     st.error(f"{t('search.error_index_access')}: {e}")
     st.stop()

@@ -8,6 +8,7 @@ import re
 from dashboard.src.i18n import get_translator
 from dashboard.src.meilisearch_client import get_meili_client
 from dashboard.src.config import INDEX_NAME, BASE_DIR
+from meilisearch_python_sdk.errors import MeilisearchApiError
 
 # Initialiser le traducteur
 if 'lang' not in st.session_state:
@@ -17,6 +18,24 @@ t = get_translator(st.session_state.lang)
 st.title(t("embeddings.title"))
 st.markdown(t("embeddings.subtitle"))
 st.info(t("embeddings.info_what_are_embeddings"), icon="🧠")
+
+# --- MeiliSearch Index Check ---
+client = get_meili_client()
+if client:
+    try:
+        client.get_index(INDEX_NAME)
+    except MeilisearchApiError as e:
+        if e.code == "index_not_found":
+            st.warning(f"⚠️ L'index '{INDEX_NAME}' n'existe pas.")
+            st.info("Veuillez le créer pour gérer les embeddings.")
+            st.page_link("pages/18_☁️_Meilisearch_Server.py", label="Aller à la configuration du serveur", icon="☁️")
+            st.stop()
+        else:
+            st.error(f"Erreur de connexion à Meilisearch: {e}")
+            st.stop()
+else:
+    st.error("La connexion à Meilisearch n'est pas configurée. Vérifiez votre fichier .env.")
+    st.stop()
 
 # Chemin vers le script à exécuter
 EMBEDDING_SCRIPT_PATH = os.path.join(BASE_DIR, "meilisearchcrawler", "meilisearch_gemini.py")

@@ -3,10 +3,11 @@ import time
 import subprocess
 import sys
 import os
+from meilisearch_python_sdk.errors import MeilisearchApiError
 
 from dashboard.src.state import start_crawler, stop_crawler, clear_cache, is_crawler_running
-from dashboard.src.utils import load_sites_config, load_cache_stats, parse_logs_for_errors
-from dashboard.src.config import CRAWLER_SCRIPT
+from dashboard.src.utils import load_sites_config, load_cache_stats, parse_logs_for_errors, get_meili_client
+from dashboard.src.config import CRAWLER_SCRIPT, INDEX_NAME
 from dashboard.src.i18n import get_translator
 
 # Initialiser le traducteur
@@ -16,7 +17,25 @@ t = get_translator(st.session_state.lang)
 
 st.header(t("controls.title"))
 
+# --- MeiliSearch Index Check ---
+client = get_meili_client()
+index_exists = False
+if client:
+    try:
+        client.get_index(INDEX_NAME)
+        index_exists = True
+    except MeilisearchApiError as e:
+        if e.code == "index_not_found":
+            st.error(f"⚠️ L'index '{INDEX_NAME}' n'existe pas.")
+            st.info("Veuillez le créer avant de lancer un crawl.")
+            st.page_link("pages/18_☁️_Meilisearch_Server.py", label="Aller à la configuration du serveur", icon="☁️")
+        else:
+            st.error(f"Erreur de connexion à Meilisearch: {e}")
+else:
+    st.error("La connexion à Meilisearch n'est pas configurée. Vérifiez votre fichier .env.")
+
 running = is_crawler_running()
+controls_disabled = running or not index_exists
 
 # Si le crawler tourne, afficher un message et un lien vers l'aperçu
 if running:
@@ -45,22 +64,22 @@ with col1:
     if sites_config and 'sites' in sites_config:
         site_names += [site['name'] for site in sites_config['sites']]
 
-    selected_site = st.selectbox(t("controls.site_to_crawl"), site_names, disabled=running)
-    force_crawl = st.checkbox(t("controls.force_crawl"), value=False, disabled=running)
+    selected_site = st.selectbox(t("controls.site_to_crawl"), site_names, disabled=controls_disabled)
+    force_crawl = st.checkbox(t("controls.force_crawl"), value=False, disabled=controls_disabled)
     
     # Nouvelle case à cocher pour les embeddings
     generate_embeddings = st.checkbox(
         t("controls.generate_embeddings"), 
         value=True,
-        disabled=running or not embeddings_enabled,
+        disabled=controls_disabled or not embeddings_enabled,
         help=help_text or "Génère un vecteur sémantique pour chaque nouvelle page."
     )
 
-    workers = st.slider(t("controls.workers"), 1, 20, 5, disabled=running)
+    workers = st.slider(t("controls.workers"), 1, 20, 5, disabled=controls_disabled)
 
     site_param = None if selected_site == t("controls.all_sites") else selected_site
 
-    if st.button(t("controls.launch_crawl"), disabled=running, type="primary", width='stretch'):
+    if st.button(t("controls.launch_crawl"), disabled=controls_disabled, type="primary", width='stretch'):
         success = start_crawler(site=site_param, force=force_crawl, workers=workers, embed=generate_embeddings)
         if success:
             if site_param:
@@ -86,7 +105,7 @@ with col2:
 
     st.markdown("---")
 
-    if st.button(t("controls.clear_cache"), disabled=running, width='stretch'):
+    if st.button(t("controls.clear_cache"), disabled=controls_disabled, width='stretch'):
         success = clear_cache()
         if success:
             st.toast(t('controls.toast_cache_cleared'), icon="🗑️")
@@ -96,12 +115,12 @@ with col2:
             st.toast(t('controls.toast_cache_empty'), icon="ℹ️")
 
     cache_stats = load_cache_stats()
-    if cache_stats:
+    if cache_stats and cache_stats['total_urls'] > 0:
         st.info(t("controls.current_cache").format(total_urls=f"{cache_stats['total_urls']:,}", sites=cache_stats['sites']))
 
     st.markdown("---")
 
-    if st.button(t("controls.show_cache_stats"), width='stretch'):
+    if st.button(t("controls.show_cache_stats"), width='stretch', disabled=running):
         with st.spinner(t("controls.calculating_stats")):
             result = subprocess.run(
                 [sys.executable, CRAWLER_SCRIPT, "--stats-only"],

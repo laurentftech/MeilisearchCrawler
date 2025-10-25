@@ -14,7 +14,7 @@ services:
       MEILI_MAX_INDEXING_MEMORY: 512MB
       MEILI_MAX_INDEXING_THREADS: 2
     volumes:
-      - meilisearch-data:/meili_data
+      - ./meili_data:/meili_data
     networks:
       - kidsearch-network
     deploy:

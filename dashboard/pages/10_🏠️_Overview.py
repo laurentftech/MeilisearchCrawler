@@ -3,9 +3,12 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import time
-from dashboard.src.utils import load_status, load_crawl_history, save_crawl_history
+from meilisearch_python_sdk.errors import MeilisearchApiError
+
+from dashboard.src.utils import load_status, load_crawl_history, save_crawl_history, get_meili_client
 from dashboard.src.state import start_crawler, is_crawler_running
 from dashboard.src.i18n import get_translator
+from dashboard.src.config import INDEX_NAME
 
 # Initialiser le traducteur
 if 'lang' not in st.session_state:
@@ -14,6 +17,25 @@ t = get_translator(st.session_state.lang)
 
 st.title(t("overview.title"))
 st.markdown(t("overview.subtitle"))
+
+# --- MeiliSearch Index Check ---
+client = get_meili_client()
+if client:
+    try:
+        client.get_index(INDEX_NAME)
+    except MeilisearchApiError as e:
+        if e.code == "index_not_found":
+            st.warning(f"⚠️ L'index '{INDEX_NAME}' n'existe pas.")
+            st.info("Veuillez le créer pour visualiser l'aperçu.")
+            st.page_link("pages/18_☁️_Meilisearch_Server.py", label="Aller à la configuration du serveur", icon="☁️")
+            st.stop()
+        else:
+            st.error(f"Erreur de connexion à Meilisearch: {e}")
+            st.stop()
+else:
+    st.error("La connexion à Meilisearch n'est pas configurée. Vérifiez votre fichier .env.")
+    st.stop()
+
 
 running = is_crawler_running()
 status = load_status()
