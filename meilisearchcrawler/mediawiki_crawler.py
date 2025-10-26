@@ -21,7 +21,7 @@ except ImportError:
     CURL_CFFI_AVAILABLE = False
 
 # Imports pour la migration vers SQLite
-import certifi
+import certifi, aiohttp
 from meilisearchcrawler.crawler import should_skip_page, update_cache, config
 from meilisearchcrawler.embeddings import create_embedding_provider, EmbeddingProvider
 
@@ -361,6 +361,29 @@ class MediaWikiCrawler:
         """Vérifie si la page doit être ignorée (cache) en utilisant le cache DB."""
         return should_skip_page(url, content_hash)
 
+    async def await_embedding_service_ready(self):
+        """Attend que le service d'embedding HuggingFace soit prêt."""
+        from meilisearchcrawler.embeddings import HuggingFaceInferenceAPIEmbeddingProvider
+        if not isinstance(self.embedding_provider, HuggingFaceInferenceAPIEmbeddingProvider):
+            return
+
+        base_url = embedding_provider.api_url.rsplit('/', 1)[0]
+        health_url = f"{base_url}/health"
+        while True:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(health_url, timeout=5) as response:
+                        if response.status == 200:
+                            logger.debug("   ✓ Service d'embedding prêt.")
+                            return
+                        else:
+                            logger.warning(f"   ⚠️ Service d'embedding non prêt (status: {response.status}), attente...")
+            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                logger.warning(f"   ⚠️ Erreur de connexion au service d'embedding ({e}), attente...")
+            
+            await asyncio.sleep(5)
+
+
     async def index_batch_with_embeddings(self, documents: List[Dict], meilisearch_index,
                                           use_embeddings: bool, embedding_batch_size: int):
         """Indexe un batch de documents avec embeddings si activé"""
@@ -380,6 +403,9 @@ class MediaWikiCrawler:
 
             # Traiter par batches
             for i in range(0, len(texts_to_embed), embedding_batch_size):
+                # Attendre que le service soit prêt avant chaque batch
+                await self.await_embedding_service_ready()
+
                 batch_texts = texts_to_embed[i:i + embedding_batch_size]
                 batch_embeddings = self.get_embeddings_batch(batch_texts)
 
@@ -387,6 +413,10 @@ class MediaWikiCrawler:
                     all_embeddings.extend(batch_embeddings)
                 else:
                     all_embeddings.extend([None] * len(batch_texts))
+                
+                # Throttling pour ne pas surcharger le service d'embedding
+                if config.EMBEDDING_BATCH_DELAY > 0:
+                    await asyncio.sleep(config.EMBEDDING_BATCH_DELAY)
 
             # Ajouter les embeddings aux documents avec metadata du provider
             if len(all_embeddings) == len(documents):

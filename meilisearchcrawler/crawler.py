@@ -33,7 +33,7 @@ from meilisearch_python_sdk.models.task import TaskInfo
 from meilisearch_python_sdk.models.settings import MeilisearchSettings
 
 from meilisearchcrawler.cache_db import CacheDB
-from meilisearchcrawler.embeddings import create_embedding_provider, EmbeddingProvider
+from meilisearchcrawler.embeddings import create_embedding_provider, EmbeddingProvider, HuggingFaceInferenceAPIEmbeddingProvider
 
 # ---------------------------
 # Project Structure Setup
@@ -97,6 +97,7 @@ class Config:
     EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", 768))
     GEMINI_EMBEDDING_BATCH_SIZE = int(os.getenv("GEMINI_EMBEDDING_BATCH_SIZE", 100))
     HUGGINGFACE_EMBEDDING_BATCH_SIZE = int(os.getenv("HUGGINGFACE_EMBEDDING_BATCH_SIZE", 16))
+    EMBEDDING_BATCH_DELAY = float(os.getenv('EMBEDDING_BATCH_DELAY', 0.1))
     MAX_CRAWL_DURATION = int(os.getenv('MAX_CRAWL_DURATION', 3600))
     MAX_QUEUE_SIZE = int(os.getenv('MAX_QUEUE_SIZE', 50000))
     MAX_WORKERS = int(os.getenv('MAX_WORKERS', 20))
@@ -424,6 +425,30 @@ def extract_images(soup: BeautifulSoup, base_url: str, max_images: int = 5) -> L
 # ---------------------------
 # Embeddings (Multi-Provider)
 # ---------------------------
+async def await_embedding_service_ready():
+    """Waits for the HuggingFace embedding service to be ready."""
+    if not isinstance(embedding_provider, HuggingFaceInferenceAPIEmbeddingProvider):
+        return
+
+    base_url = embedding_provider.api_url.rsplit('/', 1)[0]
+    health_url = f"{base_url}/health"
+    
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(health_url, timeout=5) as response:
+                    if response.status == 200:
+                        logger.debug("   ✓ Service d'embedding prêt.")
+                        return
+                    else:
+                        logger.warning(f"   ⚠️ Service d'embedding non prêt (status: {response.status}), attente...")
+        except asyncio.TimeoutError:
+            logger.warning("   ⏱️ Timeout lors de la vérification de l'état du service d'embedding, attente...")
+        except aiohttp.ClientError as e:
+            logger.warning(f"   ❌ Erreur de connexion au service d'embedding ({e}), attente...")
+        
+        await asyncio.sleep(5) # Wait before retrying
+
 def get_embeddings_batch(texts: List[str]) -> Optional[List[List[float]]]:
     """Generate embeddings using the configured provider"""
     if not embedding_provider or embedding_provider.get_embedding_dim() == 0:
@@ -460,12 +485,19 @@ async def index_documents_batch(index, documents: List[Dict], stats=None):
             batch_size = 16 # Fallback for other potential providers
 
         for i in range(0, len(texts_to_embed), batch_size):
+            # Wait for the embedding service to be ready before sending a new batch
+            await await_embedding_service_ready()
+
             batch_texts = texts_to_embed[i:i + batch_size]
             batch_embeddings = get_embeddings_batch(batch_texts)
             if batch_embeddings:
                 all_embeddings.extend(batch_embeddings)
             else:
                 all_embeddings.extend([None] * len(batch_texts))
+            
+            # Add a small delay to avoid overwhelming the embedding service
+            if config.EMBEDDING_BATCH_DELAY > 0:
+                await asyncio.sleep(config.EMBEDDING_BATCH_DELAY)
 
         if len(all_embeddings) == len(documents):
             model_name = embedding_provider.get_model_name()
