@@ -122,9 +122,9 @@ services:
       WIKI_SITE_NAME: ${WIKI_SITE_NAME:-Vikidia}
 
     volumes:
-      - /volume1/Laurent/docker/kidsearch/data:/app/data
-      - /volume1/Laurent/docker/kidsearch/config:/app/config
-      - /volume1/Laurent/docker/kidsearch/streamlit:/app/.streamlit
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./streamlit:/app/.streamlit
     networks:
       - kidsearch-network
     depends_on:
