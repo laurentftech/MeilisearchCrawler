@@ -63,6 +63,7 @@ controls:
   force_crawl: "🔄 Force (ignore cache)"
   workers: "👥 Number of parallel workers"
   generate_embeddings: "🧠 Generate embeddings (semantic)"
+  persistent_cache: "🎯 Persistent cache (depth-first exploration)"
   launch_crawl: "🚀 Launch Crawl"
   actions: "Actions"
   stop_crawl: "🛑 Stop Crawl"

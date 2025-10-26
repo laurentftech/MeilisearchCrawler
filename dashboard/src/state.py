@@ -20,7 +20,7 @@ def is_crawler_running():
             os.remove(PID_FILE)
         return False
 
-def start_crawler(site=None, force=False, workers=None, embed=False):
+def start_crawler(site=None, force=False, workers=None, embed=False, persistent_cache=False):
     """Starts the crawler as a background process. Returns True on success, False on failure."""
     if is_crawler_running():
         return False # Indique que le crawler tourne déjà
@@ -32,6 +32,7 @@ def start_crawler(site=None, force=False, workers=None, embed=False):
         if force: cmd.append("--force")
         if workers: cmd.extend(["--workers", str(workers)])
         if embed: cmd.append("--embeddings") # Ajout du flag pour les embeddings
+        if persistent_cache: cmd.append("--persistent-cache") # Cache permanent
 
         process = subprocess.Popen(cmd)
         with open(PID_FILE, "w") as f:

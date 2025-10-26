@@ -63,6 +63,7 @@ controls:
   force_crawl: "🔄 Force (ignorer le cache)"
   workers: "👥 Nombre de workers parallèles"
   generate_embeddings: "🧠 Générer les embeddings (sémantique)"
+  persistent_cache: "🎯 Cache persistant (exploration en profondeur)"
   launch_crawl: "🚀 Lancer le Crawl"
   actions: "Actions"
   stop_crawl: "🛑 Arrêter le Crawl"

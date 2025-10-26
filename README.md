@@ -1,20 +1,35 @@
-# Meilisearch Crawler
+# KidSearch API & Meilisearch Crawler
 
-This project is a high-performance, asynchronous web crawler designed to populate a Meilisearch instance with content from various websites. It serves as a companion for the [KidSearch](https://github.com/laurentftech/kidsearch) project, a safe search engine for children.
+This project provides a complete backend solution for a safe search engine like [KidSearch](https://github.com/laurentftech/kidsearch). It consists of two main components:
 
-The crawler is configurable via a simple YAML file (`sites.yml`) and supports HTML pages, JSON APIs, and MediaWiki sites.
+1.  A **KidSearch API Server**: A FastAPI-based server that performs federated searches across multiple sources (local Meilisearch, Google, Wikipedia) and uses a local model to semantically rerank results.
+2.  A **Meilisearch Crawler**: A high-performance, asynchronous web crawler that populates the local Meilisearch instance with content from websites, JSON APIs, and MediaWiki sites.
+
+This combination creates a powerful and flexible search backend, capable of delivering relevant and safe results.
 
 ## ✨ Features
 
+### KidSearch API Server
+- **FastAPI Backend**: A lightweight, high-performance API server to expose search functionalities.
+- **Federated Search**: Aggregates results from multiple sources in real-time: the local Meilisearch index, Google Custom Search (GSE), and Wikipedia/Vikidia APIs.
+- **Local Hybrid Reranking**: Fetches results from all sources, then uses a local cross-encoder model to intelligently rerank the combined list based on semantic relevance, ensuring the best content is always prioritized.
+- **Ready for Production**: Can be easily deployed as a Docker container.
+
+### Core Crawler
 - **Asynchronous & Parallel**: Built with `asyncio` and `aiohttp` for high-speed, concurrent crawling.
-- **Semantic Search Ready**: Can generate and index vector embeddings using the Google Gemini API for state-of-the-art semantic search.
-- **Graceful Quota Management**: Automatically detects when the Gemini API quota is exceeded and safely stops the crawl.
-- **Interactive Dashboard**: A Streamlit-based web UI to monitor, control, and configure the crawler in real-time.
 - **Flexible Sources**: Natively supports crawling standard HTML websites, JSON APIs, and MediaWiki-powered sites (like Wikipedia or Vikidia).
 - **Incremental Crawling**: Uses a local cache to only re-index pages that have changed since the last crawl, saving time and resources.
-- **Crawl Resumption**: If a crawl is interrupted (either manually or by a page limit), it can be seamlessly resumed later.
+- **Crawl Resumption**: If a crawl is interrupted, it can be seamlessly resumed later.
 - **Smart Content Extraction**: Uses `trafilatura` for robust main content detection from HTML.
 - **Respects `robots.txt`**: Follows standard exclusion protocols.
+- **Depth-First Crawling**: Prioritizes exploring newly discovered links to dig deeper into a site's structure first.
+
+### Search & Indexing
+- **Semantic Search Ready**: Can generate and index vector embeddings using Google Gemini or a local HuggingFace model.
+- **Graceful Quota Management**: Automatically detects when the Gemini API quota is exceeded and safely stops the crawl.
+
+### Monitoring & Control
+- **Interactive Dashboard**: A Streamlit-based web UI to monitor, control, and configure the crawler in real-time.
 - **Advanced CLI**: Powerful command-line options for fine-grained control.
 
 ![screenshot_dashboard.png](media/screenshot_dashboard_en.png)
@@ -78,13 +93,13 @@ This crawler needs a Meilisearch instance to send its data to. The easiest way t
     ```
     You can now edit `config/sites.yml` to add the sites you want to index.
 
-## 3. Running the Crawler
+## 3. Running the Application
 
-You can run the crawler via the command line or the interactive dashboard.
+The project can be run in different modes: crawler, API server, or dashboard.
 
-### Command-Line Interface
+### Crawler (Command-Line)
 
-Simply run the `crawler.py` script:
+Run the `crawler.py` script to start indexing content.
 
 ```sh
 python crawler.py # Runs an incremental crawl on all sites
@@ -103,6 +118,15 @@ python crawler.py # Runs an incremental crawl on all sites
 # Force a re-crawl of "Vikidia" with embeddings enabled
 python crawler.py --force --site "Vikidia" --embeddings
 ```
+
+### KidSearch API Server
+
+Run the `api.py` script to start the FastAPI server, which exposes the search endpoint.
+
+```sh
+python api.py
+```
+The API will be available at `http://localhost:8000`. You can access the interactive documentation at `http://localhost:8000/docs`.
 
 ### Interactive Dashboard
 

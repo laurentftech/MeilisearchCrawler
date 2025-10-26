@@ -66,13 +66,21 @@ with col1:
 
     selected_site = st.selectbox(t("controls.site_to_crawl"), site_names, disabled=controls_disabled)
     force_crawl = st.checkbox(t("controls.force_crawl"), value=False, disabled=controls_disabled)
-    
+
     # Nouvelle case à cocher pour les embeddings
     generate_embeddings = st.checkbox(
-        t("controls.generate_embeddings"), 
+        t("controls.generate_embeddings"),
         value=True,
         disabled=controls_disabled or not embeddings_enabled,
         help=help_text or "Génère un vecteur sémantique pour chaque nouvelle page."
+    )
+
+    # Option de cache persistant
+    persistent_cache = st.checkbox(
+        t("controls.persistent_cache"),
+        value=False,
+        disabled=controls_disabled,
+        help="Exploration en profondeur : ne jamais re-crawler les URLs déjà visitées. Idéal pour découvrir tout le contenu du site sans répétition."
     )
 
     workers = st.slider(t("controls.workers"), 1, 20, 5, disabled=controls_disabled)
@@ -80,7 +88,7 @@ with col1:
     site_param = None if selected_site == t("controls.all_sites") else selected_site
 
     if st.button(t("controls.launch_crawl"), disabled=controls_disabled, type="primary", width='stretch'):
-        success = start_crawler(site=site_param, force=force_crawl, workers=workers, embed=generate_embeddings)
+        success = start_crawler(site=site_param, force=force_crawl, workers=workers, embed=generate_embeddings, persistent_cache=persistent_cache)
         if success:
             if site_param:
                 st.toast(t('controls.toast_crawler_started_for_site').format(site=site_param), icon="🚀")

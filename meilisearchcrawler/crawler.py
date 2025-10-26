@@ -25,6 +25,7 @@ from tqdm import tqdm as tqdm_sync
 import trafilatura
 import certifi
 import signal
+import heapq
 
 # New SDK Imports
 from meilisearch_python_sdk import AsyncClient
@@ -774,17 +775,42 @@ async def crawl_site_html_async(context: CrawlContext, index):
     logger.info(f"🚀 Démarrage crawl async '{context.site['name']}' -> {base_url}")
     logger.info(f"   Paramètres: max={max_pages}, depth={context.max_depth}, delay={context.rate_limiter.delay:.2f}s, workers={config.CONCURRENT_REQUESTS}")
     logger.info(f"   📦 Indexation progressive par lots de {config.INDEXING_BATCH_SIZE}")
+    logger.info(f"   🎯 Stratégie: Exploration en profondeur (DFS) avec priorité maximale")
     crawl_start_time = time.time()
     logger.info(f"   ⏱️  Timeout maximum: {config.MAX_CRAWL_DURATION}s ({config.MAX_CRAWL_DURATION/60:.1f} min)")
     logger.info(f"   🧠 Limite file d'attente: {config.MAX_QUEUE_SIZE} URLs")
     documents_buffer = []
     session_data = cache_db.get_session(context.site['name'])
     resume_urls = session_data.get('resume_urls') if session_data and not session_data.get('completed') else None
+
+    # Priority queue: (negative_depth, counter, url, actual_depth)
+    # negative_depth ensures deepest URLs are processed first (min heap)
+    # counter ensures FIFO for same depth levels
+    to_visit_heap = []
+    url_counter = 0
+
     if resume_urls and not context.force_recrawl:
         logger.info(f"🔄 Reprise du crawl depuis {len(resume_urls)} URLs précédemment découvertes.")
-        to_visit = {(url, 0) for url in resume_urls}
+        # Parse resume URLs - format: "url|depth" or just "url" (legacy)
+        for resume_entry in set(resume_urls):
+            if '|' in resume_entry:
+                url, depth_str = resume_entry.rsplit('|', 1)
+                try:
+                    depth = int(depth_str)
+                except ValueError:
+                    depth = 0
+            else:
+                url = resume_entry
+                depth = 0
+            heapq.heappush(to_visit_heap, (-depth, url_counter, url, depth))
+            url_counter += 1
     else:
-        to_visit = {(normalize_url(base_url), 0)}
+        normalized_base = normalize_url(base_url)
+        heapq.heappush(to_visit_heap, (0, url_counter, normalized_base, 0))
+        url_counter += 1
+
+    to_visit_urls = {item[2] for item in to_visit_heap}
+
     visited: Set[str] = set()
     in_progress: Set[str] = set()
     timeout = ClientTimeout(total=config.TIMEOUT)
@@ -797,7 +823,7 @@ async def crawl_site_html_async(context: CrawlContext, index):
     }
     context.stats.pbar = tqdm(total=max_pages if max_pages > 0 else None, desc=f"🔍 {context.site['name']}", unit="pages", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
     async with ClientSession(timeout=timeout, connector=connector, headers=headers) as session:
-        while to_visit or in_progress:
+        while to_visit_heap or in_progress:
             elapsed_time = time.time() - crawl_start_time
             if elapsed_time > config.MAX_CRAWL_DURATION:
                 logger.warning(f"⏱️  Timeout atteint ({elapsed_time/60:.1f} min) - arrêt du crawl")
@@ -805,16 +831,19 @@ async def crawl_site_html_async(context: CrawlContext, index):
             if shutdown_handler.should_stop():
                 logger.warning("⚠️  Arrêt gracieux demandé - sauvegarde en cours...")
                 break
-            if len(to_visit) > config.MAX_QUEUE_SIZE:
-                logger.warning(f"🧠 Limite de queue atteinte ({len(to_visit)} URLs) - arrêt temporaire")
-                break
+            if len(to_visit_heap) > config.MAX_QUEUE_SIZE:
+                logger.warning(f"🧠 Limite de queue atteinte ({len(to_visit_heap)} URLs) - arrêt pour consommer la queue")
+                # Don't break completely, just stop adding new URLs
             if max_pages > 0 and context.stats.pages_visited >= max_pages:
                 break
             batch = []
-            while to_visit and len(batch) < config.CONCURRENT_REQUESTS:
+            while to_visit_heap and len(batch) < config.CONCURRENT_REQUESTS:
                 if max_pages > 0 and context.stats.pages_visited + len(in_progress) >= max_pages:
                     break
-                url, depth = to_visit.pop()
+                # Pop deepest URL first (min heap with negative depth)
+                neg_depth, counter, url, depth = heapq.heappop(to_visit_heap)
+                to_visit_urls.discard(url)
+
                 if url in visited or url in in_progress:
                     continue
                 if is_excluded(url, context.exclude_patterns):
@@ -849,19 +878,27 @@ async def crawl_site_html_async(context: CrawlContext, index):
                         await index_documents_batch(index, documents_buffer, context.stats)
                         await context.stats.increment('pages_indexed', len(documents_buffer))
                         documents_buffer.clear()
-                for link_url, link_depth in new_links:
-                    if link_url not in visited and link_url not in in_progress:
-                        to_visit.add((link_url, link_depth))
+
+                # Add new links to priority queue - skip if queue is too full
+                if len(to_visit_heap) < config.MAX_QUEUE_SIZE:
+                    for link_url, link_depth in new_links:
+                        if link_url not in visited and link_url not in in_progress and link_url not in to_visit_urls:
+                            # Push with negative depth for DFS (deepest first)
+                            heapq.heappush(to_visit_heap, (-link_depth, url_counter, link_url, link_depth))
+                            url_counter += 1
+                            to_visit_urls.add(link_url)
+
     context.stats.pbar.close()
-    context.stats.discovered_but_not_visited = len(to_visit)
+    context.stats.discovered_but_not_visited = len(to_visit_heap)
     if documents_buffer:
         logger.info(f"📦 Indexation des {len(documents_buffer)} documents restants...")
         await index_documents_batch(index, documents_buffer, context.stats)
         await context.stats.increment('pages_indexed', len(documents_buffer))
         documents_buffer.clear()
-    if len(to_visit) > 0 and (max_pages > 0 and context.stats.pages_visited >= max_pages):
-        logger.info(f"📝 Sauvegarde de {len(to_visit)} URLs pour une reprise future.")
-        resume_urls_set = {url for url, depth in to_visit}
+    if len(to_visit_heap) > 0 and (max_pages > 0 and context.stats.pages_visited >= max_pages):
+        logger.info(f"📝 Sauvegarde de {len(to_visit_heap)} URLs pour une reprise future.")
+        # Save URLs with depth information for proper resumption
+        resume_urls_set = {f"{item[2]}|{item[3]}" for item in to_visit_heap}
         complete_crawl_session(context.site['name'], completed=False, resume_urls=resume_urls_set)
 
 async def crawl_json_api_async(context: CrawlContext, index):
@@ -986,6 +1023,7 @@ def parse_arguments():
     parser.add_argument('--stats-only', action='store_true', help='Affiche les stats du cache')
     parser.add_argument('--workers', type=int, default=config.CONCURRENT_REQUESTS, help=f'Nombre de workers (défaut: {config.CONCURRENT_REQUESTS})')
     parser.add_argument('--embeddings', action='store_true', help='Active la génération d\'embeddings (provider configuré dans .env)')
+    parser.add_argument('--persistent-cache', action='store_true', help='Cache persistant : ne jamais re-crawler les URLs déjà visitées (ignore CACHE_DAYS)')
     return parser.parse_args()
 
 def show_cache_stats():
@@ -1020,6 +1058,11 @@ async def main_async():
     args = parse_arguments()
     global embedding_provider
     global_status = None
+
+    # Configure persistent cache if requested
+    if args.persistent_cache:
+        config.CACHE_DAYS = 36500  # 100 years = essentially permanent
+        logger.info("💾 Cache persistant activé - les URLs visitées ne seront jamais re-crawlées")
 
     # Initialize embedding provider if requested
     if args.embeddings:
@@ -1081,6 +1124,11 @@ async def main_async():
             logger.info(f"{'=' * 60}")
             logger.info(f"📋 {len(sites_to_crawl)} site(s) à crawler")
             logger.info(f"🔄 Mode: {'FORCE RECRAWL' if args.force else 'INCREMENTAL'}")
+            if args.persistent_cache:
+                logger.info(f"💾 Cache: PERSISTANT (jamais d'expiration)")
+            else:
+                logger.info(f"💾 Cache: {config.CACHE_DAYS} jours d'expiration")
+            logger.info(f"🎯 Stratégie: Exploration en profondeur (DFS)")
             logger.info(f"⚡ Workers: {config.CONCURRENT_REQUESTS} requêtes parallèles")
             logger.info(f"📦 Indexation: par lots de {config.INDEXING_BATCH_SIZE} documents")
             if embedding_provider and embedding_provider.get_embedding_dim() > 0:
