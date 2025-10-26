@@ -367,7 +367,7 @@ class MediaWikiCrawler:
         if not isinstance(self.embedding_provider, HuggingFaceInferenceAPIEmbeddingProvider):
             return
 
-        base_url = embedding_provider.api_url.rsplit('/', 1)[0]
+        base_url = self.embedding_provider.api_url.rsplit('/', 1)[0]
         health_url = f"{base_url}/health"
         while True:
             try:
