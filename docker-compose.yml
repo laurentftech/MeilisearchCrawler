@@ -8,23 +8,15 @@ services:
       - "7700:7700"
     environment:
       MEILI_MASTER_KEY: ${MEILI_KEY:-masterKey}
-      MEILI_ENV: ${MEILI_ENV:-production}
       MEILI_NO_ANALYTICS: true
-      # Optimized for 6GB RAM - can use more memory
+      # Optimized for 6GB RAM
       MEILI_MAX_INDEXING_MEMORY: 512MB
       MEILI_MAX_INDEXING_THREADS: 2
     volumes:
+      # Use Docker volume instead of hardcoded Synology path
       - ./meili_data:/meili_data
     networks:
       - kidsearch-network
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 1G     # Increased from 512M
-        reservations:
-          cpus: '0.5'
-          memory: 512M
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
       interval: 30s
@@ -34,11 +26,9 @@ services:
 
   # Text Embeddings Inference - Optimized for DS220+ (6GB RAM, 2 cores)
   embeddings_small:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.1
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.2
     container_name: embeddings_small
     restart: unless-stopped
-    ports:
-      - "8081:80"
     networks:
       - kidsearch-network
     environment:
@@ -46,32 +36,26 @@ services:
       # Limit CPU threads (DS220+ has 2 cores)
       RAYON_NUM_THREADS: "2"
       OMP_NUM_THREADS: "2"
+    ports:
+      - "8090:80"  # Expose Prometheus metrics
     command:
       - "--model-id"
       - "intfloat/multilingual-e5-small"
       - "--port"
       - "80"
-      # 🔧 Optimized for DS220+ with 6GB RAM (less restrictive)
+      # 🔧 Balanced settings for stability
       - "--max-concurrent-requests"
-      - "8"              # Increased from 4 (more RAM available)
+      - "4"
       - "--max-client-batch-size"
-      - "8"              # Max 8 texts per batch
+      - "6"
       - "--max-batch-tokens"
-      - "12288"          # Increased from 8192 (more RAM)
+      - "10240"
       - "--pooling"
       - "mean"
       - "--max-batch-requests"
-      - "8"              # Increased internal batching
+      - "6"
     volumes:
       - ./models_cache:/data
-    deploy:
-      resources:
-        limits:
-          cpus: '1.5'    # Leave 0.5 core for system
-          memory: 1.5G   # Increased from 1G (multilingual-e5-small + overhead)
-        reservations:
-          cpus: '1.0'
-          memory: 768M
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80/health"]
       interval: 30s
@@ -81,24 +65,20 @@ services:
 
   # KidSearch Dashboard & API (All-in-one)
   kidsearch-all:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: gandulf78/kidsearch:latest
     container_name: kidsearch-all
     restart: unless-stopped
     ports:
       - "8501:8501"  # Dashboard
-      - "8080:8080"  # API
+      - "8082:8080"  # API
+    dns:
+      - 1.1.1.3
+      - 1.0.0.3
     environment:
       SERVICE: all
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      DASHBOARD_PORT: 8501
-      DASHBOARD_HOST: 0.0.0.0
-      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
-      API_PORT: 8080
-      API_HOST: 0.0.0.0
-      API_WORKERS: 3  # Increased from 2 (6GB RAM allows more workers)
+      LOG_LEVEL: ${LOG_LEVEL:-info}  # Use info by default, not debug
       API_ENABLED: "true"
+      API_WORKERS: ${API_WORKERS:-2}
 
       # Display URLs
       DISPLAY_HOST: ${DISPLAY_HOST:-}
@@ -114,17 +94,19 @@ services:
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-huggingface}
       HUGGINGFACE_MODEL: ${HUGGINGFACE_MODEL:-intfloat/multilingual-e5-small}
       HUGGINGFACE_API_URL: ${HUGGINGFACE_API_URL:-http://embeddings_small:80/embed}
+      HUGGINGFACE_EMBEDDING_BATCH_SIZE: ${HUGGINGFACE_EMBEDDING_BATCH_SIZE:-6}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_EMBEDDING_BATCH_SIZE: ${GEMINI_EMBEDDING_BATCH_SIZE:-20}
+      EMBEDDING_BATCH_DELAY: ${EMBEDDING_BATCH_DELAY:-2}
 
-      # --- Reranking Configuration (Optimized for 6GB RAM) ---
+      # --- Reranking Configuration (Optimized for DS220+ 6GB RAM) ---
       RERANKING_ENABLED: ${RERANKING_ENABLED:-true}
       RERANKER_API_URL: ${RERANKER_API_URL:-http://embeddings_small:80/embed}
       RERANKER_MODEL: ${RERANKER_MODEL:-intfloat/multilingual-e5-small}
-
-      # 🔧 Optimized for 6GB RAM - can use larger batches
-      RERANKER_BATCH_SIZE: ${RERANKER_BATCH_SIZE:-6}  # Increased from 4
-      RERANKER_MAX_CHARS: ${RERANKER_MAX_CHARS:-300}  # Keep at 300
-      RERANKER_CACHE_SIZE: ${RERANKER_CACHE_SIZE:-4096}  # Doubled from 2048
-      RERANKER_TIMEOUT: ${RERANKER_TIMEOUT:-12}  # Slightly longer for larger batches
+      RERANKER_BATCH_SIZE: ${RERANKER_BATCH_SIZE:-3}
+      RERANKER_MAX_CHARS: ${RERANKER_MAX_CHARS:-200}
+      RERANKER_CACHE_SIZE: ${RERANKER_CACHE_SIZE:-4096}
+      RERANKER_TIMEOUT: ${RERANKER_TIMEOUT:-12}
 
       # Weights for result merging
       MEILISEARCH_WEIGHT: ${MEILISEARCH_WEIGHT:-0.7}
@@ -133,7 +115,6 @@ services:
       # --- Google APIs ---
       GOOGLE_CSE_API_KEY: ${GOOGLE_CSE_API_KEY:-}
       GOOGLE_CSE_ID: ${GOOGLE_CSE_ID:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
 
       # --- Wiki API (Vikidia) ---
       WIKI_API_URL: ${WIKI_API_URL:-https://fr.vikidia.org/w/api.php}
@@ -141,19 +122,11 @@ services:
       WIKI_SITE_NAME: ${WIKI_SITE_NAME:-Vikidia}
 
     volumes:
-      - ./data:/app/data
-      - ./.streamlit:/app/.streamlit
-      - ./config:/app/config
+      - /volume1/Laurent/docker/kidsearch/data:/app/data
+      - /volume1/Laurent/docker/kidsearch/config:/app/config
+      - /volume1/Laurent/docker/kidsearch/streamlit:/app/.streamlit
     networks:
       - kidsearch-network
-    deploy:
-      resources:
-        limits:
-          cpus: '1.5'
-          memory: 1.5G   # Increased from 1G
-        reservations:
-          cpus: '0.5'
-          memory: 768M
     depends_on:
       meilisearch:
         condition: service_healthy
@@ -164,80 +137,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
-
-  # Alternative: Dashboard only
-  # kidsearch-dashboard:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   container_name: kidsearch-dashboard
-  #   restart: unless-stopped
-  #   ports:
-  #     - "8501:8501"
-  #   environment:
-  #     SERVICE: dashboard
-  #     DASHBOARD_PORT: 8501
-  #     DASHBOARD_HOST: 0.0.0.0
-  #     DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
-  #     MEILI_URL: http://meilisearch:7700
-  #     MEILI_KEY: ${MEILI_KEY:-masterKey}
-  #     INDEX_NAME: ${INDEX_NAME:-kidsearch}
-  #   volumes:
-  #     - ./data:/app/data
-  #     - ./.streamlit:/app/.streamlit
-  #     - ./config:/app/config
-  #   networks:
-  #     - kidsearch-network
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         cpus: '0.5'
-  #         memory: 768M
-  #   depends_on:
-  #     - meilisearch
-
-  # Alternative: API only
-  # kidsearch-api:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   container_name: kidsearch-api
-  #   restart: unless-stopped
-  #   ports:
-  #     - "8080:8080"
-  #   environment:
-  #     SERVICE: api
-  #     API_PORT: 8080
-  #     API_HOST: 0.0.0.0
-  #     API_WORKERS: 3
-  #     API_ENABLED: "true"
-  #     MEILI_URL: http://meilisearch:7700
-  #     MEILI_KEY: ${MEILI_KEY:-masterKey}
-  #     INDEX_NAME: ${INDEX_NAME:-kidsearch}
-  #
-  #     # Reranking
-  #     RERANKING_ENABLED: ${RERANKING_ENABLED:-true}
-  #     RERANKER_API_URL: http://embeddings_small:80/embed
-  #     RERANKER_BATCH_SIZE: 6
-  #     RERANKER_MAX_CHARS: 300
-  #     RERANKER_CACHE_SIZE: 4096
-  #   volumes:
-  #     - ./data:/app/data
-  #   networks:
-  #     - kidsearch-network
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         cpus: '1.0'
-  #         memory: 1G
-  #   depends_on:
-  #     - meilisearch
-  #     - embeddings_small
-
-volumes:
-  meilisearch-data:
-    driver: local
+      start_period: 60s
 
 networks:
   kidsearch-network:

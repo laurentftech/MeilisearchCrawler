@@ -71,7 +71,7 @@ class ServiceManager:
         Start the Streamlit dashboard.
         The PYTHONPATH is explicitly set for the subprocess to ensure module discovery.
         """
-        dashboard_path = Path(__file__).parent / "dashboard" / "dashboard.py"
+        dashboard_path = Path(__file__).parent / "dashboard" / "Home.py"
 
         if not dashboard_path.exists():
             logger.error(f"Dashboard file not found: {dashboard_path}")

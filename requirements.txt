@@ -18,6 +18,7 @@ trafilatura
 langdetect
 curl-cffi
 aiohttp
+psutil
 
 # --- Dashboard ---
 streamlit
