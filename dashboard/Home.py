@@ -212,8 +212,9 @@ with col1:
 
     **{t('section_api')}**
     {t('page_embeddings')}
-    {t('page_api_documentation')}   
-    {t('page_api_monitor')}    
+    {t('page_api_documentation')}
+    {t('page_api_monitor')}
+    {t('page_api_metrics')}
     """)
 
 with col2:

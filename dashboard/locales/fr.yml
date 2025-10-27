@@ -25,6 +25,7 @@ page_tree: "- **🌳 Arbre des Pages**: Visualisez la structure et la fraîcheur
 page_embeddings: "- **🧠 Embeddings**: Gérez l'indexation sémantique."
 page_api_documentation: "- **📚 Documentation API**: Explorez les endpoints de l'API."
 page_api_monitor: "- **📡 Moniteur API**: Suivez l'activité et les performances de l'API."
+page_api_metrics: "- **📈 Métriques de l'API**: Un tableau de bord pour surveiller les performances et les métriques de l'API."
 current_status: "Statut Actuel"
 status_running: "**Le crawler est actuellement en cours d'exécution.**\n\nVous pouvez suivre sa progression dans la page `Vue d'ensemble`."
 status_stopped: "**Le crawler est actuellement arrêté.**\n\nAllez dans la page `Contrôles` pour le démarrer."
@@ -355,3 +356,7 @@ api_metrics:
   crawler_metrics: "Métriques du Crawler"
   avg_embedding_batch_time: "Temps moyen batch d'embedding"
   avg_indexing_batch_time: "Temps moyen batch d'indexation"
+
+auth_required: "Authentification Requise"
+password_label: "Mot de passe"
+incorrect_password: "Mot de passe incorrect. Veuillez réessayer."
