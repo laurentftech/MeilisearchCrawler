@@ -8,6 +8,7 @@ import hashlib
 import json
 import time
 import sqlite3
+import os
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -164,7 +165,7 @@ class CSEClient:
 
         # Add Referer header to pass HTTP referrer restrictions
         headers = {
-            "Referer": "https://searchforkids.gandulf78.synology.me/",
+            "Referer": os.environ.get("FRONTEND_URL", ""),
         }
 
         async with aiohttp.ClientSession() as session:

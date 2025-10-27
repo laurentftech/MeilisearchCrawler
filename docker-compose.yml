@@ -80,6 +80,9 @@ services:
       API_ENABLED: "true"
       API_WORKERS: ${API_WORKERS:-2}
 
+      # Frontend URL of Google CSE
+      FRONTEND_URL: ${FRONTEND_URL:-}
+
       # Display URLs
       DISPLAY_HOST: ${DISPLAY_HOST:-}
       DASHBOARD_DISPLAY_HOST: ${DASHBOARD_DISPLAY_HOST:-}

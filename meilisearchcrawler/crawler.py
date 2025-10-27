@@ -1467,12 +1467,20 @@ async def main_async():
 
 
 def main():
+    PID_FILE = os.path.join(DATA_DIR, "crawler.pid")
     try:
         asyncio.run(main_async())
     except KeyboardInterrupt:
         logger.warning("\n\n⚠️  Arrêt du crawler par l'utilisateur")
     except Exception as e:
         logger.error(f"\n\n❌ Erreur fatale: {e}", exc_info=True)
+    finally:
+        if os.path.exists(PID_FILE):
+            try:
+                os.remove(PID_FILE)
+                logger.info(f"✓ Fichier PID supprimé: {PID_FILE}")
+            except OSError as e:
+                logger.error(f"❌ Erreur lors de la suppression du fichier PID: {e}")
 
 
 if __name__ == "__main__":
