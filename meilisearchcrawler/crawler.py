@@ -1,4 +1,4 @@
-"""# ---------------------------
+# ---------------------------
 # KidSearch Crawler - Version Complète Optimisée DS220+ (6GB RAM, 2 cores)
 # ---------------------------
 import yaml
@@ -185,7 +185,8 @@ class TEIMetricsMonitor:
                         return None
 
                     text = await response.text()
-                    return self._parse_metrics(text)
+                    self.last_metrics = self._parse_metrics(text)
+                    return self.last_metrics
         except Exception as e:
             logger.debug(f"Erreur récupération métriques TEI: {e}")
             return None
@@ -236,7 +237,6 @@ class TEIMetricsMonitor:
             if count > 0:
                 metrics['avg_batch_size'] = total_size / count
 
-        self.last_metrics = metrics
         return metrics
 
     async def should_throttle(self) -> bool:
@@ -1519,4 +1519,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()""
+    main()
