@@ -149,6 +149,7 @@ Le projet inclut un tableau de bord web pour surveiller et contrôler le crawler
 -   **🌳 Arbre des Pages**: Une visualisation interactive de la structure de votre site.
 -   **⚙️ Configuration**: Un éditeur interactif pour le fichier `sites.yml`.
 -   **🪵 Logs**: Une vue en direct du fichier de log du crawler.
+-   **📈 Métriques de l'API**: Un tableau de bord pour surveiller les performances et les métriques de l'API.
 
 ## 4. Configuration de `sites.yml`
 

@@ -14,6 +14,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from meilisearch_python_sdk.errors import MeilisearchCommunicationError
 from fastapi.responses import JSONResponse
+from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import Gauge
 
 from .routes import health, search
 from .services.meilisearch_client import MeilisearchClient
@@ -23,6 +25,7 @@ from .services.safety import SafetyFilter
 from .services.merger import SearchMerger
 from .services.reranker import HuggingFaceAPIReranker
 from .services.stats_db import StatsDatabase
+from .services.crawler_status import get_crawl_status
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +177,62 @@ async def lifespan(app: FastAPI):
         stats_db = StatsDatabase()
         app.state.stats_db = stats_db
         logger.info("✓ Stats database initialized")
+
+        # --- Custom Prometheus Metrics ---
+        logger.info("Initializing custom Prometheus metrics...")
+        Gauge(
+            "avg_meilisearch_time_ms",
+            "Average Meilisearch query time in ms (all time)"
+        ).set_function(lambda: app.state.stats_db.get_avg_meilisearch_time())
+
+        Gauge(
+            "avg_cse_time_ms",
+            "Average Google CSE query time in ms (all time)"
+        ).set_function(lambda: app.state.stats_db.get_avg_cse_time())
+
+        Gauge(
+            "avg_reranking_time_ms",
+            "Average reranking time in ms (all time)"
+        ).set_function(lambda: app.state.stats_db.get_avg_reranking_time())
+
+        # --- Crawler Metrics ---
+        Gauge(
+            "crawler_running",
+            "Indicates if the crawler is currently running (1 for running, 0 for stopped)"
+        ).set_function(lambda: get_crawl_status().get("running", 0))
+
+        Gauge(
+            "crawler_pages_indexed",
+            "Total number of pages indexed in the last crawl"
+        ).set_function(lambda: get_crawl_status().get("pages_indexed", 0))
+
+        Gauge(
+            "crawler_sites_crawled",
+            "Number of sites crawled in the last run"
+        ).set_function(lambda: get_crawl_status().get("sites_crawled", 0))
+
+        Gauge(
+            "crawler_errors",
+            "Total number of errors during the last crawl"
+        ).set_function(lambda: get_crawl_status().get("errors", 0))
+
+        Gauge(
+            "crawler_last_duration_sec",
+            "Duration of the last crawl in seconds"
+        ).set_function(lambda: get_crawl_status().get("last_crawl_duration_sec", 0))
+
+        Gauge(
+            "crawler_avg_embedding_batch_time_ms",
+            "Average time to generate embeddings for a batch of documents in ms"
+        ).set_function(lambda: get_crawl_status().get("avg_embedding_batch_time_ms", 0))
+
+        Gauge(
+            "crawler_avg_indexing_batch_time_ms",
+            "Average time to index a batch of documents in ms"
+        ).set_function(lambda: get_crawl_status().get("avg_indexing_batch_time_ms", 0))
+
+        logger.info("✓ Custom Prometheus metrics initialized")
+
     except Exception as e:
         logger.warning(f"✗ Failed to initialize stats database: {e}")
         logger.warning("Continuing without stats tracking")
@@ -197,6 +256,9 @@ def create_app() -> FastAPI:
         openapi_url="/api/openapi.json",
         lifespan=lifespan,
     )
+
+    # Add metrics middleware
+    Instrumentator().instrument(app).expose(app, endpoint="/api/metrics")
 
     # CORS middleware for frontend integration
     app.add_middleware(

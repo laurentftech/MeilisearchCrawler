@@ -24,7 +24,6 @@ services:
       retries: 3
       start_period: 30s
 
-  # Text Embeddings Inference - Optimized for DS220+ (6GB RAM, 2 cores)
   embeddings_small:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8.2
     container_name: embeddings_small
@@ -33,35 +32,25 @@ services:
       - kidsearch-network
     environment:
       HF_HUB_DISABLE_TELEMETRY: "1"
-      # Limit CPU threads (DS220+ has 2 cores)
       RAYON_NUM_THREADS: "2"
       OMP_NUM_THREADS: "2"
     ports:
-      - "8090:80"  # Expose Prometheus metrics
+      - "8090:80"
     command:
       - "--model-id"
-      - "intfloat/multilingual-e5-small"
+      - "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
       - "--port"
       - "80"
-      # 🔧 Balanced settings for stability
-      - "--max-concurrent-requests"
-      - "4"
-      - "--max-client-batch-size"
-      - "6"
-      - "--max-batch-tokens"
-      - "10240"
       - "--pooling"
       - "mean"
-      - "--max-batch-requests"
-      - "6"
     volumes:
       - ./models_cache:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80/health"]
       interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
+      timeout: 15s
+      retries: 5
+      start_period: 180s
 
   # KidSearch Dashboard & API (All-in-one)
   kidsearch-all:
@@ -95,7 +84,7 @@ services:
 
       # --- Embedding Configuration ---
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-huggingface}
-      HUGGINGFACE_MODEL: ${HUGGINGFACE_MODEL:-intfloat/multilingual-e5-small}
+      HUGGINGFACE_MODEL: ${HUGGINGFACE_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
       HUGGINGFACE_API_URL: ${HUGGINGFACE_API_URL:-http://embeddings_small:80/embed}
       HUGGINGFACE_EMBEDDING_BATCH_SIZE: ${HUGGINGFACE_EMBEDDING_BATCH_SIZE:-6}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -105,7 +94,7 @@ services:
       # --- Reranking Configuration (Optimized for DS220+ 6GB RAM) ---
       RERANKING_ENABLED: ${RERANKING_ENABLED:-true}
       RERANKER_API_URL: ${RERANKER_API_URL:-http://embeddings_small:80/embed}
-      RERANKER_MODEL: ${RERANKER_MODEL:-intfloat/multilingual-e5-small}
+      RERANKER_MODEL: ${RERANKER_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
       RERANKER_BATCH_SIZE: ${RERANKER_BATCH_SIZE:-3}
       RERANKER_MAX_CHARS: ${RERANKER_MAX_CHARS:-200}
       RERANKER_CACHE_SIZE: ${RERANKER_CACHE_SIZE:-4096}

@@ -262,6 +262,45 @@ class StatsDatabase:
             logger.error(f"Failed to get avg response time: {e}")
             return 0.0
 
+    def get_avg_meilisearch_time(self) -> float:
+        """Get average Meilisearch query time in ms."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT AVG(meilisearch_time_ms) FROM search_queries WHERE meilisearch_time_ms IS NOT NULL")
+            avg = cursor.fetchone()[0]
+            conn.close()
+            return avg or 0.0
+        except Exception as e:
+            logger.error(f"Failed to get avg meilisearch time: {e}")
+            return 0.0
+
+    def get_avg_cse_time(self) -> float:
+        """Get average CSE query time in ms."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT AVG(cse_time_ms) FROM search_queries WHERE cse_time_ms IS NOT NULL")
+            avg = cursor.fetchone()[0]
+            conn.close()
+            return avg or 0.0
+        except Exception as e:
+            logger.error(f"Failed to get avg cse time: {e}")
+            return 0.0
+
+    def get_avg_reranking_time(self) -> float:
+        """Get average reranking time in ms."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT AVG(reranking_time_ms) FROM search_queries WHERE reranking_time_ms IS NOT NULL")
+            avg = cursor.fetchone()[0]
+            conn.close()
+            return avg or 0.0
+        except Exception as e:
+            logger.error(f"Failed to get avg reranking time: {e}")
+            return 0.0
+
     def get_cache_hit_rate(self) -> float:
         """Get CSE cache hit rate (0-1)."""
         try:

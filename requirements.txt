@@ -10,6 +10,8 @@ python-dotenv
 requests
 meilisearch-python-sdk>=4.10.0
 numpy==1.26.4
+prometheus-fastapi-instrumentator
+prometheus-client
 
 # --- Crawler ---
 beautifulsoup4

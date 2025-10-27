@@ -149,6 +149,7 @@ The project includes a web-based dashboard to monitor and control the crawler in
 -   **🌳 Page Tree**: An interactive visualization of your site's structure.
 -   **⚙️ Configuration**: An interactive editor for the `sites.yml` file.
 -   **🪵 Logs**: A live view of the crawler's log file.
+-   **📈 API Metrics**: A dashboard to monitor API performance and metrics.
 
 ## 4. Configuration of `sites.yml`
 

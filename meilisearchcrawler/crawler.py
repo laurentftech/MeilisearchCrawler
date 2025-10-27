@@ -1,4 +1,4 @@
-# ---------------------------
+"""# ---------------------------
 # KidSearch Crawler - Version Complète Optimisée DS220+ (6GB RAM, 2 cores)
 # ---------------------------
 import yaml
@@ -679,7 +679,7 @@ def get_embeddings_batch(texts: List[str]) -> Optional[List[List[float]]]:
 # ---------------------------
 # Progressive Indexing
 # ---------------------------
-async def index_documents_batch(index, documents: List[Dict], stats=None):
+async def index_documents_batch(index, documents: List[Dict], stats):
     if not documents:
         return
 
@@ -699,6 +699,8 @@ async def index_documents_batch(index, documents: List[Dict], stats=None):
     if embedding_provider and embedding_provider.get_embedding_dim() > 0:
         provider_name = embedding_provider.get_provider_name()
         logger.debug(f"   -> Génération de {len(documents)} embeddings ({provider_name})...")
+        
+        embedding_start_time = time.time()
         all_embeddings = []
         texts_to_embed = [f"{doc.get('title', '')}\n{doc.get('content', '')}".strip() for doc in documents]
 
@@ -711,11 +713,9 @@ async def index_documents_batch(index, documents: List[Dict], stats=None):
             batch_size = 6
 
         for i in range(0, len(texts_to_embed), batch_size):
-            # Log mémoire tous les 5 batchs
             if i % (batch_size * 5) == 0:
                 ResourceMonitor.log_usage()
 
-            # Wait for service ready
             await await_embedding_service_ready()
 
             batch_texts = texts_to_embed[i:i + batch_size]
@@ -727,6 +727,10 @@ async def index_documents_batch(index, documents: List[Dict], stats=None):
 
             if config.EMBEDDING_BATCH_DELAY > 0:
                 await asyncio.sleep(config.EMBEDDING_BATCH_DELAY)
+        
+        embedding_duration_ms = (time.time() - embedding_start_time) * 1000
+        await stats.increment('total_embedding_time_ms', int(embedding_duration_ms))
+        await stats.increment('embedding_batches')
 
         if len(all_embeddings) == len(documents):
             model_name = embedding_provider.get_model_name()
@@ -739,17 +743,19 @@ async def index_documents_batch(index, documents: List[Dict], stats=None):
                     doc["embedding_model"] = model_name
                     doc["embedding_dimensions"] = len(embedding)
 
-        # Log stats TEI périodiquement
         if tei_monitor:
             tei_monitor.log_stats()
 
     try:
+        indexing_start_time = time.time()
         await index.add_documents(documents)
+        indexing_duration_ms = (time.time() - indexing_start_time) * 1000
+        await stats.increment('total_indexing_time_ms', int(indexing_duration_ms))
+        await stats.increment('indexing_batches')
         logger.debug(f"   ✓ {len(documents)} documents indexés")
     except Exception as e:
         logger.error(f"❌ Erreur indexation: {e}")
-        if stats:
-            await stats.increment('errors', len(documents))
+        await stats.increment('errors', len(documents))
 
 
 # ---------------------------
@@ -767,6 +773,10 @@ class CrawlStats:
         self.discovered_but_not_visited = 0
         self.errors = 0
         self.redirects = 0
+        self.total_embedding_time_ms = 0
+        self.embedding_batches = 0
+        self.total_indexing_time_ms = 0
+        self.indexing_batches = 0
         self.lock = asyncio.Lock()
         self.pbar = None
 
@@ -799,6 +809,12 @@ class CrawlStats:
         logger.info(f"❌ Erreurs: {self.errors}")
         if self.pages_visited > 0:
             logger.info(f"⚡ Vitesse: {self.pages_visited / duration:.2f} pages/s")
+        if self.embedding_batches > 0:
+            avg_embed_time = self.total_embedding_time_ms / self.embedding_batches
+            logger.info(f"🧠 Temps moyen embedding/batch: {avg_embed_time:.2f} ms")
+        if self.indexing_batches > 0:
+            avg_index_time = self.total_indexing_time_ms / self.indexing_batches
+            logger.info(f"📦 Temps moyen indexation/batch: {avg_index_time:.2f} ms")
         logger.info(f"{'=' * 60}\n")
 
 
@@ -816,6 +832,10 @@ class GlobalCrawlStatus:
         self.pages_indexed = 0
         self.errors = 0
         self.stats_by_site = []
+        self.total_embedding_time_ms = 0
+        self.total_embedding_batches = 0
+        self.total_indexing_time_ms = 0
+        self.total_indexing_batches = 0
 
     def to_dict(self) -> Dict:
         duration = 0
@@ -823,6 +843,15 @@ class GlobalCrawlStatus:
             duration = self.end_time - self.start_time
         elif self.start_time:
             duration = time.time() - self.start_time
+        
+        avg_embedding_time = 0
+        if self.total_embedding_batches > 0:
+            avg_embedding_time = self.total_embedding_time_ms / self.total_embedding_batches
+
+        avg_indexing_time = 0
+        if self.total_indexing_batches > 0:
+            avg_indexing_time = self.total_indexing_time_ms / self.total_indexing_batches
+
         return {
             "running": self.running,
             "timestamp": datetime.now().isoformat(),
@@ -833,7 +862,9 @@ class GlobalCrawlStatus:
             "errors": self.errors,
             "last_crawl_duration_sec": round(duration, 2),
             "stats": self.stats_by_site,
-            "queue_length": 0
+            "queue_length": 0,
+            "avg_embedding_batch_time_ms": avg_embedding_time,
+            "avg_indexing_batch_time_ms": avg_indexing_time
         }
 
     def save(self):
@@ -862,6 +893,10 @@ class GlobalCrawlStatus:
         self.sites_crawled += 1
         self.pages_indexed += site_stats.pages_indexed
         self.errors += site_stats.errors
+        self.total_embedding_time_ms += site_stats.total_embedding_time_ms
+        self.total_embedding_batches += site_stats.embedding_batches
+        self.total_indexing_time_ms += site_stats.total_indexing_time_ms
+        self.total_indexing_batches += site_stats.indexing_batches
         self.stats_by_site.append({
             "site": site_stats.site_name,
             "status": "✅ Terminé",
@@ -1283,7 +1318,7 @@ def parse_arguments():
     parser.add_argument('--workers', type=int, default=config.CONCURRENT_REQUESTS,
                         help=f'Nombre de workers (défaut: {config.CONCURRENT_REQUESTS})')
     parser.add_argument('--embeddings', action='store_true',
-                        help='Active la génération d\'embeddings (provider configuré dans .env)')
+                        help='Active la génération d''embeddings (provider configuré dans .env)')
     parser.add_argument('--persistent-cache', action='store_true',
                         help='Cache persistant : ne jamais re-crawler les URLs déjà visitées (ignore CACHE_DAYS)')
     return parser.parse_args()
@@ -1484,4 +1519,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main()""
