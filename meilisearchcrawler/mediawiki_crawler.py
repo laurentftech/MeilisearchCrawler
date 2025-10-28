@@ -445,7 +445,7 @@ class MediaWikiCrawler:
             await self.context.stats.increment('errors', len(documents))
 
     async def crawl_and_index_progressive(self, meilisearch_index, use_embeddings: bool,
-                                          indexing_batch_size: int):
+                                          indexing_batch_size: int, global_status):
         """
         Méthode principale de crawl via l'API MediaWiki avec indexation progressive
         """

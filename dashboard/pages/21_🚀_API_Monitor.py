@@ -31,48 +31,44 @@ API_ENABLED = os.getenv("API_ENABLED", "false").lower() == "true"
 
 API_BASE_URL = f"http://{API_HOST}:{API_PORT}/api"
 
-
-def check_api_health():
-    """Check if API is running and healthy."""
+@st.cache_data(ttl=5) # Cache for 5 seconds
+def get_api_data():
+    """Check API health and get statistics."""
     try:
-        response = requests.get(f"{API_BASE_URL}/health", timeout=2)
-        if response.status_code == 200:
-            return True, response.json()
-        return False, None
-    except Exception:
-        return False, None
+        headers = {'Cache-Control': 'no-cache', 'Pragma': 'no-cache'}
+        health_response = requests.get(f"{API_BASE_URL}/health", timeout=2, headers=headers)
+        stats_response = requests.get(f"{API_BASE_URL}/stats", timeout=2, headers=headers)
 
+        health_data = health_response.json() if health_response.status_code == 200 else None
+        stats_data = stats_response.json() if stats_response.status_code == 200 else None
+        
+        return health_response.status_code == 200, health_data, stats_data
 
-def get_api_stats():
-    """Get API statistics."""
-    try:
-        response = requests.get(f"{API_BASE_URL}/stats", timeout=2)
-        if response.status_code == 200:
-            return response.json()
-        return None
-    except Exception:
-        return None
+    except requests.exceptions.RequestException:
+        return False, None, None
 
+# --- Main Page --- 
 
 # Check API status
-api_running, health_data = check_api_health()
-
-# Header status
 if not API_ENABLED:
     st.warning("⚠️ API backend désactivé dans .env (API_ENABLED=false)")
     st.info("Pour activer: définir `API_ENABLED=true` dans le fichier .env")
     st.stop()
-elif api_running:
+
+api_running, health_data, stats_data = get_api_data()
+
+if api_running:
     st.success(f"✅ API en ligne - {API_BASE_URL}")
 else:
     st.error(f"❌ API hors ligne - {API_BASE_URL}")
     st.info("Démarrer l'API avec: `python api.py`")
     st.stop()
 
+# --- Header --- 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    if api_running and health_data:
+    if health_data:
         st.metric("Version", health_data.get("version", "N/A"))
 
 with col2:
@@ -91,12 +87,13 @@ with col3:
         st.metric("Documents", "N/A")
 
 with col4:
-    st.button("🔄 Rafraîchir", key="refresh_api")
-
+    if st.button("🔄 Rafraîchir", key="refresh_api"):
+        st.cache_data.clear()
+        st.rerun()
 
 st.markdown("---")
 
-# Services Health
+# --- Services Health ---
 st.subheader("🏥 État des services")
 
 if health_data:
@@ -120,35 +117,33 @@ if health_data:
 
 st.markdown("---")
 
-# API Statistics
+# --- API Statistics ---
 st.subheader("📊 Statistiques d'utilisation")
 
-stats = get_api_stats()
-
-if stats:
+if stats_data:
     # Metrics
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.metric(
             "Recherches totales",
-            f"{stats.get('total_searches', 0):,}",
+            f"{stats_data.get('total_searches', 0):,}",
         )
 
     with col2:
         st.metric(
             "Recherches (dernière heure)",
-            stats.get('searches_last_hour', 0),
+            stats_data.get('searches_last_hour', 0),
         )
 
     with col3:
         st.metric(
             "Temps de réponse moyen",
-            f"{stats.get('avg_response_time_ms', 0):.0f} ms",
+            f"{stats_data.get('avg_response_time_ms', 0):.0f} ms",
         )
 
     with col4:
-        error_rate = stats.get('error_rate', 0) * 100
+        error_rate = stats_data.get('error_rate', 0) * 100
         st.metric(
             "Taux d'erreur",
             f"{error_rate:.1f}%",
@@ -160,8 +155,8 @@ if stats:
     col1, col2 = st.columns([3, 1])
 
     with col1:
-        quota_used = stats.get('cse_quota_used', 0)
-        quota_limit = stats.get('cse_quota_limit', 100)
+        quota_used = stats_data.get('cse_quota_used', 0)
+        quota_limit = stats_data.get('cse_quota_limit', 100)
         if quota_limit > 0:
             st.progress(quota_used / quota_limit)
         else:
@@ -172,7 +167,7 @@ if stats:
         st.metric("Utilisé / Limite", f"{quota_used} / {quota_limit}")
 
     # Cache hit rate
-    cache_hit_rate = stats.get('cache_hit_rate', 0) * 100
+    cache_hit_rate = stats_data.get('cache_hit_rate', 0) * 100
     st.metric(
         "Taux de cache CSE",
         f"{cache_hit_rate:.1f}%",
@@ -180,9 +175,9 @@ if stats:
     )
 
     # Top queries
-    if stats.get('top_queries'):
-        st.subheader("🔝 Requêtes populaires")
-        df_queries = pd.DataFrame(stats['top_queries'])
+    st.subheader("🔝 Requêtes populaires")
+    if stats_data.get('top_queries'):
+        df_queries = pd.DataFrame(stats_data['top_queries'])
 
         if not df_queries.empty:
             # Bar chart
@@ -204,13 +199,51 @@ if stats:
 
             with st.expander("📋 Voir toutes les requêtes"):
                 st.dataframe(df_queries, use_container_width=True)
+        else:
+            st.info("Aucune requête populaire pour le moment.")
+    else:
+        st.info("Aucune requête populaire pour le moment.")
 
 else:
     st.info("Aucune statistique disponible pour le moment")
 
+# --- Admin Actions ---
+st.markdown("---")
+st.subheader("⚙️ Actions Administratives")
+
+if 'confirm_reset' not in st.session_state:
+    st.session_state.confirm_reset = False
+
+if st.button("🗑️ Réinitialiser les statistiques", key="reset_stats"):
+    st.session_state.confirm_reset = True
+
+if st.session_state.confirm_reset:
+    st.warning("Êtes-vous sûr de vouloir supprimer toutes les statistiques de recherche ? Cette action est irréversible.")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Oui, tout supprimer", type="primary"):
+            try:
+                response = requests.post(f"{API_BASE_URL}/stats/reset", timeout=5)
+                if response.status_code == 200:
+                    st.success("Statistiques réinitialisées avec succès !")
+                    st.cache_data.clear()
+                    st.session_state.confirm_reset = False
+                    time.sleep(1) # Allow user to see the message
+                    st.rerun()
+                else:
+                    st.error(f"Erreur lors de la réinitialisation: {response.text}")
+                    st.session_state.confirm_reset = False
+            except Exception as e:
+                st.error(f"Erreur de connexion à l'API: {e}")
+                st.session_state.confirm_reset = False
+    with col2:
+        if st.button("Annuler"):
+            st.session_state.confirm_reset = False
+            st.rerun()
+
 st.markdown("---")
 
-# Test Search
+# --- Test Search ---
 st.subheader("🔍 Tester la recherche")
 
 with st.form("test_search_form"):
@@ -295,31 +328,30 @@ if submit and test_query:
 
 st.markdown("---")
 
-# Auto-refresh
-if api_running:
-    if 'pause_api_refresh' not in st.session_state:
-        st.session_state.pause_api_refresh = False
+# --- Auto-refresh ---
+if 'pause_api_refresh' not in st.session_state:
+    st.session_state.pause_api_refresh = False
 
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        refresh_rate = st.slider(
-            "Rafraîchissement automatique (secondes)",
-            5, 60, 30,
-            key="api_refresh_slider",
-            disabled=st.session_state.pause_api_refresh
-        )
-    with col2:
-        st.write("")
-        st.write("")
-        if st.session_state.pause_api_refresh:
-            if st.button("▶️ Reprendre"):
-                st.session_state.pause_api_refresh = False
-                st.rerun()
-        else:
-            if st.button("⏸️ Pause"):
-                st.session_state.pause_api_refresh = True
-                st.rerun()
+col1, col2 = st.columns([3, 1])
+with col1:
+    refresh_rate = st.slider(
+        "Rafraîchissement automatique (secondes)",
+        5, 60, 10, # Default to 10s
+        key="api_refresh_slider",
+        disabled=st.session_state.pause_api_refresh
+    )
+with col2:
+    st.write("")
+    st.write("")
+    if st.session_state.pause_api_refresh:
+        if st.button("▶️ Reprendre"):
+            st.session_state.pause_api_refresh = False
+            st.rerun()
+    else:
+        if st.button("⏸️ Pause"):
+            st.session_state.pause_api_refresh = True
+            st.rerun()
 
-    if not st.session_state.pause_api_refresh:
-        time.sleep(refresh_rate)
-        st.rerun()
+if not st.session_state.pause_api_refresh:
+    time.sleep(refresh_rate)
+    st.rerun()

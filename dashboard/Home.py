@@ -172,6 +172,9 @@ with st.sidebar:
             api_url = f"http://{display_host}:{api_port}"
         
         st.caption(f"URL: {api_url}")
+        # Sauvegarder l'URL dans la session pour les autres pages
+        st.session_state.api_url = api_url
+
     else:
         st.metric(t('api_status'), f"🔴 {t('disabled')}")
 

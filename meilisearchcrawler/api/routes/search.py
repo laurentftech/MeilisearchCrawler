@@ -9,6 +9,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Query, HTTPException, status, Request
+from fastapi.responses import JSONResponse
 from meilisearch_python_sdk.errors import MeilisearchApiError, MeilisearchCommunicationError
 
 from ..models import (
@@ -329,7 +330,7 @@ async def submit_feedback(request: Request, feedback: FeedbackRequest) -> Feedba
     summary="API statistics",
     description="Get API usage statistics for dashboard monitoring",
 )
-async def get_stats(request: Request) -> APIStats:
+async def get_stats(request: Request) -> JSONResponse:
     """
     Get API usage statistics.
     Used by Streamlit dashboard for monitoring.
@@ -340,7 +341,7 @@ async def get_stats(request: Request) -> APIStats:
 
     if not stats_db:
         # Return empty stats if database not initialized
-        return APIStats(
+        api_stats = APIStats(
             total_searches=0,
             searches_last_hour=0,
             avg_response_time_ms=0.0,
@@ -350,31 +351,61 @@ async def get_stats(request: Request) -> APIStats:
             top_queries=[],
             error_rate=0.0,
         )
+    else:
+        # Get stats from database
+        total_searches = stats_db.get_total_searches()
+        searches_last_hour = stats_db.get_searches_last_hour()
+        avg_response_time = stats_db.get_avg_search_time()
+        cache_hit_rate = stats_db.get_cache_hit_rate()
+        top_queries = stats_db.get_top_queries(limit=50) # Increased limit
+        error_rate = stats_db.get_error_rate()
 
-    # Get stats from database
-    total_searches = stats_db.get_total_searches()
-    searches_last_hour = stats_db.get_searches_last_hour()
-    avg_response_time = stats_db.get_avg_response_time()
-    cache_hit_rate = stats_db.get_cache_hit_rate()
-    top_queries = stats_db.get_top_queries(limit=10)
-    error_rate = stats_db.get_error_rate()
+        # Get CSE quota info
+        cse_quota_used = 0
+        cse_quota_limit = 100
 
-    # Get CSE quota info
-    cse_quota_used = 0
-    cse_quota_limit = 100
+        if cse_client:
+            quota_info = cse_client.get_quota_usage()
+            cse_quota_used = quota_info.get("used", 0)
+            cse_quota_limit = quota_info.get("limit", 100)
 
-    if cse_client:
-        quota_info = cse_client.get_quota_usage()
-        cse_quota_used = quota_info.get("used", 0)
-        cse_quota_limit = quota_info.get("limit", 100)
+        api_stats = APIStats(
+            total_searches=total_searches,
+            searches_last_hour=searches_last_hour,
+            avg_response_time_ms=avg_response_time,
+            cse_quota_used=cse_quota_used,
+            cse_quota_limit=cse_quota_limit,
+            cache_hit_rate=cache_hit_rate,
+            top_queries=top_queries,
+            error_rate=error_rate,
+        )
 
-    return APIStats(
-        total_searches=total_searches,
-        searches_last_hour=searches_last_hour,
-        avg_response_time_ms=avg_response_time,
-        cse_quota_used=cse_quota_used,
-        cse_quota_limit=cse_quota_limit,
-        cache_hit_rate=cache_hit_rate,
-        top_queries=top_queries,
-        error_rate=error_rate,
-    )
+    headers = {"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"}
+    return JSONResponse(content=api_stats.model_dump(), headers=headers)
+
+@router.post(
+    "/stats/reset",
+    status_code=status.HTTP_200_OK,
+    summary="Reset API statistics",
+    description="Delete all recorded search queries and feedback.",
+)
+async def reset_stats(request: Request):
+    """
+    Reset all API usage statistics.
+    """
+    stats_db = request.app.state.stats_db if hasattr(request.app.state, "stats_db") else None
+
+    if not stats_db:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Stats database is not initialized.",
+        )
+
+    if stats_db.reset_stats():
+        logger.info("API statistics have been reset.")
+        return {"message": "API statistics reset successfully."}
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to reset API statistics.",
+        )

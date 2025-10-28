@@ -49,9 +49,11 @@ class StatsDatabase:
                 total_results INTEGER,
                 meilisearch_results INTEGER,
                 cse_results INTEGER,
+                wiki_results INTEGER,
                 processing_time_ms REAL,
                 meilisearch_time_ms REAL,
                 cse_time_ms REAL,
+                wiki_time_ms REAL,
                 reranking_time_ms REAL,
                 reranking_applied BOOLEAN,
                 cache_hit BOOLEAN,
@@ -104,6 +106,15 @@ class StatsDatabase:
             if 'use_reranking' not in columns:
                 logger.info("Updating stats.db schema: adding 'use_reranking' column")
                 cursor.execute("ALTER TABLE search_queries ADD COLUMN use_reranking BOOLEAN")
+            
+            if 'wiki_results' not in columns:
+                logger.info("Updating stats.db schema: adding 'wiki_results' column")
+                cursor.execute("ALTER TABLE search_queries ADD COLUMN wiki_results INTEGER")
+
+            if 'wiki_time_ms' not in columns:
+                logger.info("Updating stats.db schema: adding 'wiki_time_ms' column")
+                cursor.execute("ALTER TABLE search_queries ADD COLUMN wiki_time_ms REAL")
+
 
         except Exception as e:
             logger.error(f"Failed to migrate stats_db schema: {e}")
@@ -145,19 +156,21 @@ class StatsDatabase:
             cursor.execute("""
                 INSERT INTO search_queries (
                     query, lang, limit_requested, use_cse, use_reranking, use_hybrid,
-                    total_results, meilisearch_results, cse_results,
-                    processing_time_ms, meilisearch_time_ms, cse_time_ms,
+                    total_results, meilisearch_results, cse_results, wiki_results,
+                    processing_time_ms, meilisearch_time_ms, cse_time_ms, wiki_time_ms,
                     reranking_time_ms, reranking_applied, cache_hit,
                     timestamp, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 query, lang, limit, use_cse, use_reranking, use_hybrid,
                 stats.get("total_results", 0),
                 stats.get("meilisearch_results", 0),
                 stats.get("cse_results", 0),
+                stats.get("wiki_results", 0),
                 stats.get("processing_time_ms", 0),
                 stats.get("meilisearch_time_ms"),
                 stats.get("cse_time_ms"),
+                stats.get("wiki_time_ms"),
                 stats.get("reranking_time_ms"),
                 stats.get("reranking_applied", False),
                 stats.get("cache_hit", False),
@@ -246,8 +259,8 @@ class StatsDatabase:
             logger.error(f"Failed to get searches last hour: {e}")
             return 0
 
-    def get_avg_response_time(self) -> float:
-        """Get average response time in ms."""
+    def get_avg_search_time(self) -> float:
+        """Get average search time in ms."""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -286,6 +299,19 @@ class StatsDatabase:
             return avg or 0.0
         except Exception as e:
             logger.error(f"Failed to get avg cse time: {e}")
+            return 0.0
+            
+    def get_avg_wiki_time(self) -> float:
+        """Get average MediaWiki query time in ms."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT AVG(wiki_time_ms) FROM search_queries WHERE wiki_time_ms IS NOT NULL")
+            avg = cursor.fetchone()[0]
+            conn.close()
+            return avg or 0.0
+        except Exception as e:
+            logger.error(f"Failed to get avg wiki time: {e}")
             return 0.0
 
     def get_avg_reranking_time(self) -> float:
@@ -414,3 +440,28 @@ class StatsDatabase:
 
         except Exception as e:
             logger.error(f"Failed to cleanup old stats: {e}")
+
+    def reset_stats(self):
+        """Reset all statistics."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("DELETE FROM search_queries")
+            deleted_searches = cursor.rowcount
+
+            cursor.execute("DELETE FROM feedback")
+            deleted_feedback = cursor.rowcount
+
+            conn.commit()
+            conn.close()
+
+            logger.info(
+                f"Reset stats: {deleted_searches} searches, "
+                f"{deleted_feedback} feedback entries deleted"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to reset stats: {e}")
+            return False

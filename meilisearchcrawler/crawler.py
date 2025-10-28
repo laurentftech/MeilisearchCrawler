@@ -762,8 +762,9 @@ async def index_documents_batch(index, documents: List[Dict], stats):
 # Stats
 # ---------------------------
 class CrawlStats:
-    def __init__(self, site_name: str):
+    def __init__(self, site_name: str, global_status: 'GlobalCrawlStatus'):
         self.site_name = site_name
+        self.global_status = global_status
         self.start_time = time.time()
         self.pages_visited = 0
         self.pages_indexed = 0
@@ -778,6 +779,7 @@ class CrawlStats:
         self.total_indexing_time_ms = 0
         self.indexing_batches = 0
         self.lock = asyncio.Lock()
+        self._pages_since_last_save = 0
         self.pbar = None
 
     async def increment(self, attr: str, value: int = 1):
@@ -793,7 +795,14 @@ class CrawlStats:
                     'non-modifiées': self.pages_not_modified,
                     'erreurs': self.errors
                 })
-
+    
+            # Mise à jour du statut global toutes les 20 pages
+            if attr in ['pages_visited', 'pages_indexed', 'pages_skipped_cache', 'pages_not_modified', 'errors']:
+                self._pages_since_last_save += value
+                if self._pages_since_last_save >= 20:
+                    self.global_status.update_realtime_stats(self)
+                    self._pages_since_last_save = 0
+    
     def log_summary(self):
         duration = time.time() - self.start_time
         logger.info(f"\n{'=' * 60}")
@@ -836,6 +845,10 @@ class GlobalCrawlStatus:
         self.total_embedding_batches = 0
         self.total_indexing_time_ms = 0
         self.total_indexing_batches = 0
+        # Pour la mise à jour en temps réel
+        self._realtime_pages_indexed = 0
+        self._realtime_errors = 0
+        self._realtime_queue_length = 0
 
     def to_dict(self) -> Dict:
         duration = 0
@@ -858,11 +871,11 @@ class GlobalCrawlStatus:
             "total_sites": self.total_sites,
             "sites_crawled": self.sites_crawled,
             "active_site": self.active_site,
-            "pages_indexed": self.pages_indexed,
-            "errors": self.errors,
+            "pages_indexed": self.pages_indexed + self._realtime_pages_indexed,
+            "errors": self.errors + self._realtime_errors,
             "last_crawl_duration_sec": round(duration, 2),
             "stats": self.stats_by_site,
-            "queue_length": 0,
+            "queue_length": self._realtime_queue_length,
             "avg_embedding_batch_time_ms": avg_embedding_time,
             "avg_indexing_batch_time_ms": avg_indexing_time
         }
@@ -876,7 +889,10 @@ class GlobalCrawlStatus:
 
     def start(self):
         self.running = True
+        self.pages_indexed = 0
+        self.errors = 0
         self.start_time = time.time()
+        self.end_time = None
         self.save()
 
     def stop(self):
@@ -889,6 +905,13 @@ class GlobalCrawlStatus:
         self.active_site = site_name
         self.save()
 
+    def update_realtime_stats(self, site_stats: 'CrawlStats', queue_length: int = 0):
+        """Met à jour les compteurs pour le site en cours et sauvegarde."""
+        self._realtime_pages_indexed = site_stats.pages_indexed
+        self._realtime_errors = site_stats.errors
+        self._realtime_queue_length = queue_length
+        self.save()
+
     def finish_site(self, site_stats: CrawlStats):
         self.sites_crawled += 1
         self.pages_indexed += site_stats.pages_indexed
@@ -897,6 +920,9 @@ class GlobalCrawlStatus:
         self.total_embedding_batches += site_stats.embedding_batches
         self.total_indexing_time_ms += site_stats.total_indexing_time_ms
         self.total_indexing_batches += site_stats.indexing_batches
+        # Réinitialiser les compteurs temps réel
+        self._realtime_pages_indexed = 0
+        self._realtime_errors = 0
         self.stats_by_site.append({
             "site": site_stats.site_name,
             "status": "✅ Terminé",
@@ -909,11 +935,12 @@ class GlobalCrawlStatus:
 
 
 class CrawlContext:
-    def __init__(self, site: Dict, force_recrawl: bool):
+    def __init__(self, site: Dict, force_recrawl: bool, global_status: 'GlobalCrawlStatus'):
         self.site = site
         self.force_recrawl = force_recrawl
+        self.global_status = global_status  # <-- Ligne manquante
         self.processed_hashes: Set[str] = set()
-        self.stats = CrawlStats(site['name'])
+        self.stats = CrawlStats(site['name'], global_status)
         custom_delay = site.get('delay')
         if custom_delay is not None:
             logger.info(f"   -> Délai personnalisé appliqué: {custom_delay}s")
@@ -1163,8 +1190,11 @@ async def crawl_site_html_async(context: CrawlContext, index):
                 if doc:
                     documents_buffer.append(doc)
                     if len(documents_buffer) >= config.INDEXING_BATCH_SIZE:
-                        await index_documents_batch(index, documents_buffer, context.stats)
+                        # On met à jour les stats avant l'indexation qui peut être longue
                         await context.stats.increment('pages_indexed', len(documents_buffer))
+                        context.global_status.update_realtime_stats(context.stats, len(to_visit_heap))
+
+                        await index_documents_batch(index, documents_buffer, context.stats)
                         documents_buffer.clear()
 
                 if len(to_visit_heap) < config.MAX_QUEUE_SIZE:
@@ -1178,8 +1208,11 @@ async def crawl_site_html_async(context: CrawlContext, index):
     context.stats.discovered_but_not_visited = len(to_visit_heap)
     if documents_buffer:
         logger.info(f"📦 Indexation des {len(documents_buffer)} documents restants...")
-        await index_documents_batch(index, documents_buffer, context.stats)
+        # On met à jour les stats avant l'indexation finale
         await context.stats.increment('pages_indexed', len(documents_buffer))
+        context.global_status.update_realtime_stats(context.stats, len(to_visit_heap))
+
+        await index_documents_batch(index, documents_buffer, context.stats)
         documents_buffer.clear()
     if len(to_visit_heap) > 0 and (max_pages > 0 and context.stats.pages_visited >= max_pages):
         logger.info(f"📝 Sauvegarde de {len(to_visit_heap)} URLs pour une reprise future.")
@@ -1274,9 +1307,10 @@ async def crawl_json_api_async(context: CrawlContext, index):
                     }
                     documents_buffer.append(doc)
                     update_cache(url, content_hash, doc_id, context.site["name"])
+                    await context.stats.increment('pages_indexed')
                     if len(documents_buffer) >= config.INDEXING_BATCH_SIZE:
+                        context.global_status.update_realtime_stats(context.stats)
                         await index_documents_batch(index, documents_buffer, context.stats)
-                        await context.stats.increment('pages_indexed', len(documents_buffer))
                         documents_buffer.clear()
                 else:
                     await context.stats.increment('pages_not_indexed')
@@ -1291,8 +1325,8 @@ async def crawl_json_api_async(context: CrawlContext, index):
         context.stats.pbar.close()
         if documents_buffer:
             logger.info(f"📦 Indexation des {len(documents_buffer)} documents restants...")
+            context.global_status.update_realtime_stats(context.stats)
             await index_documents_batch(index, documents_buffer, context.stats)
-            await context.stats.increment('pages_indexed', len(documents_buffer))
             documents_buffer.clear()
     except Exception as e:
         logger.error(f"❌ Erreur traitement JSON pour {context.site['name']}: {e}")
@@ -1465,7 +1499,7 @@ async def main_async():
                 logger.info(f"🌐 [{i}/{len(sites_to_crawl)}] {site['name']}")
                 logger.info(f"    Type: {site.get('type', 'html').upper()}")
                 logger.info(f"{'=' * 60}")
-                context = CrawlContext(site, args.force)
+                context = CrawlContext(site, args.force, global_status)
                 start_crawl_session(site['name'], urlparse(site['crawl']).netloc)
                 completed_successfully = False
                 try:
