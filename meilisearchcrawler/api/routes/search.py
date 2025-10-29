@@ -6,40 +6,52 @@ import asyncio
 import logging
 import time
 import os
-from typing import Optional
+from typing import Optional, List, Tuple
+import numpy as np
 
 from fastapi import APIRouter, Query, HTTPException, status, Request
 from fastapi.responses import JSONResponse
-from meilisearch_python_sdk.errors import MeilisearchApiError, MeilisearchCommunicationError
+from meilisearch_python_sdk.errors import MeilisearchApiError
 
 from ..models import (
-    SearchRequest,
     SearchResponse,
-    SearchResult,
     SearchStats,
     FeedbackRequest,
     FeedbackResponse,
     APIStats,
     Language,
+    SearchResult
 )
+from ..state import AppState
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Global flag to check if CSE is configured
-CSE_CONFIGURED = (
-    os.getenv("GOOGLE_CSE_API_KEY") and
-    os.getenv("GOOGLE_CSE_API_KEY") != "your_google_api_key_here"
-)
+CSE_CONFIGURED = os.getenv("GOOGLE_CSE_API_KEY") and os.getenv("GOOGLE_CSE_API_KEY") != "your_google_api_key_here"
 RERANKING_ENABLED = os.getenv("RERANKING_ENABLED", "false").lower() == "true"
 
+def _truncate(text: str, max_chars: int = 256) -> str:
+    return text[:max_chars]
+
+async def _embed_results(embedding_provider, results: List[SearchResult]):
+    """Asynchronously embeds a list of search results in place."""
+    texts_to_embed = [_truncate(f"{r.title or ''} {r.excerpt or ''}") for r in results if not r.vectors]
+    if not texts_to_embed:
+        return
+
+    embeddings = await asyncio.to_thread(embedding_provider.encode, texts_to_embed)
+    
+    text_idx = 0
+    for result in results:
+        if not result.vectors:
+            result.vectors = embeddings[text_idx]
+            text_idx += 1
 
 @router.get(
     "/search",
     response_model=SearchResponse,
     status_code=status.HTTP_200_OK,
     summary="Unified search",
-    description="Search across Meilisearch and Google CSE with optional reranking",
 )
 async def search(
     request: Request,
@@ -47,365 +59,157 @@ async def search(
     lang: Language = Query(default=Language.FR, description="Search language"),
     limit: int = Query(default=20, ge=1, le=100, description="Max results"),
     use_cse: bool = Query(default=True, description="Include Google CSE results"),
-    use_hybrid: bool = Query(default=True, description="Use hybrid vector search in Meilisearch"),
+    use_hybrid: bool = Query(default=True, description="Use hybrid vector search"),
     use_reranking: bool = Query(default=True, description="Apply semantic reranking"),
 ) -> SearchResponse:
-    """
-    Unified search endpoint combining Meilisearch and Google CSE.
-
-    Flow:
-    1. Query Meilisearch for local indexed content (keyword or hybrid)
-    2. Query Google CSE if enabled (with cache check)
-    3. Apply safety filters to all results
-    4. Merge and deduplicate results
-    5. Apply semantic reranking if enabled
-    6. Return top N results with statistics
-    """
-
+    state: AppState = request.app.state
     start_time = time.time()
+    logger.info(f"Search request: q='{q}', lang={lang.value}, use_cse={use_cse}, use_reranking={use_reranking}")
 
-    logger.info(
-        f"Search request: q='{q}', lang={lang}, limit={limit}, "
-        f"use_cse={use_cse}, use_hybrid={use_hybrid}, use_reranking={use_reranking}"
-    )
+    meilisearch_client = state.meilisearch_client
+    cse_client = state.cse_client
+    wiki_clients = state.wiki_clients
+    safety_filter = state.safety_filter
+    merger = state.merger
+    reranker = state.reranker
+    embedding_provider = state.embedding_provider
 
-    # Get services from app state
-    meilisearch_client = request.app.state.meilisearch_client
-    cse_client = request.app.state.cse_client if hasattr(request.app.state, "cse_client") else None
-    wiki_client = request.app.state.wiki_client if hasattr(request.app.state, "wiki_client") else None
+    if not meilisearch_client or not await meilisearch_client.is_healthy():
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Meilisearch is not available.")
 
-    # --- Check Meilisearch availability ---
-    if not meilisearch_client:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Meilisearch client is not initialized.",
-        )
-    try:
-        is_healthy = await meilisearch_client.is_healthy()
-        if not is_healthy:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Meilisearch service is not available.",
-            )
-    except Exception as e:
-        logger.error(f"Meilisearch connection check failed: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Meilisearch service is not available. Please check the connection.",
-        )
-    # --- End check ---
-
-    safety_filter = request.app.state.safety_filter
-    merger = request.app.state.merger
-    reranker = request.app.state.reranker if hasattr(request.app.state, "reranker") else None
-
-    # Initialize result lists and timing
-    meilisearch_results = []
-    cse_results = []
-    wiki_results = []
-    cache_hit = False
-    reranking_time_ms = None
-
-    # Helper functions for parallel search execution
-    async def search_meilisearch():
-        """Search Meilisearch with error handling and timing."""
-        start = time.time()
+    async def search_meilisearch() -> Tuple[List[SearchResult], float]:
+        s = time.time()
         try:
-            results = await meilisearch_client.search(
-                query=q,
-                lang=lang.value if lang != Language.ALL else None,
-                limit=limit * 2,
-                use_hybrid=use_hybrid
-            )
-            elapsed_ms = (time.time() - start) * 1000
-            logger.info(f"Meilisearch returned {len(results)} results in {elapsed_ms:.2f}ms")
-            return results, elapsed_ms, None
+            res = await meilisearch_client.search(query=q, lang=lang.value, limit=limit * 2, use_hybrid=use_hybrid)
+            return res, (time.time() - s) * 1000
         except MeilisearchApiError as e:
-            elapsed_ms = (time.time() - start) * 1000
-            logger.error(f"Meilisearch API error: {e}", exc_info=True)
+            logger.error(f"Meilisearch API error: {e}")
             if e.code == "invalid_search_filter":
-                return [], elapsed_ms, HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=(
-                        "Meilisearch index is not configured correctly. "
-                        "Filterable attributes are missing. "
-                        "Please run the crawler once (`python crawler.py`) to apply settings."
-                    ),
-                )
-            return [], elapsed_ms, None
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Meilisearch index not configured.")
+            return [], (time.time() - s) * 1000
         except Exception as e:
-            elapsed_ms = (time.time() - start) * 1000
-            logger.error(f"Meilisearch search failed: {e}", exc_info=True)
-            return [], elapsed_ms, None
+            logger.error(f"Meilisearch search failed: {e}")
+            return [], (time.time() - s) * 1000
 
-    async def search_cse():
-        """Search Google CSE with error handling and timing."""
+    async def search_cse() -> Tuple[List[SearchResult], bool, float]:
         if not (use_cse and CSE_CONFIGURED and cse_client):
-            return [], None, False
+            return [], False, 0.0
+        s = time.time()
+        res, hit = await cse_client.search(query=q, lang=lang.value, num_results=min(limit, 10))
+        if embedding_provider:
+            await _embed_results(embedding_provider, res)
+        return res, hit, (time.time() - s) * 1000
 
-        start = time.time()
-        try:
-            results, hit = await cse_client.search(
-                query=q,
-                lang=lang.value if lang != Language.ALL else "fr",
-                num_results=min(limit, 10)  # CSE max 10 per request
-            )
-            elapsed_ms = (time.time() - start) * 1000
-            logger.info(
-                f"CSE returned {len(results)} results in {elapsed_ms:.2f}ms "
-                f"(cache_hit={hit})"
-            )
-            return results, elapsed_ms, hit
-        except Exception as e:
-            elapsed_ms = (time.time() - start) * 1000
-            logger.error(f"CSE search failed: {e}", exc_info=True)
-            return [], elapsed_ms, False
+    async def search_wiki() -> Tuple[List[SearchResult], float]:
+        """Search all configured wiki instances in parallel."""
+        if not wiki_clients:
+            return [], 0.0
 
-    async def search_wiki():
-        """Search Wiki with error handling and timing."""
-        if not wiki_client:
-            return [], None
+        s = time.time()
 
-        start = time.time()
-        try:
-            results = await wiki_client.search(
-                query=q,
-                lang=lang.value if lang != Language.ALL else "fr",
-                limit=5  # Limit wiki results
-            )
-            elapsed_ms = (time.time() - start) * 1000
-            logger.info(f"Wiki returned {len(results)} results in {elapsed_ms:.2f}ms")
-            return results, elapsed_ms
-        except Exception as e:
-            elapsed_ms = (time.time() - start) * 1000
-            logger.error(f"Wiki search failed: {e}", exc_info=True)
-            return [], elapsed_ms
+        # Search all wikis in parallel
+        async def search_single_wiki(client: 'WikiClient') -> List[SearchResult]:
+            try:
+                return await client.search(query=q, lang=lang.value, limit=5)
+            except Exception as e:
+                logger.error(f"Error searching wiki {client.site_name}: {e}")
+                return []
 
-    # Execute all searches in parallel
-    parallel_start = time.time()
-    meili_task, cse_task, wiki_task = await asyncio.gather(
-        search_meilisearch(),
-        search_cse(),
-        search_wiki(),
-        return_exceptions=False
-    )
-    parallel_time_ms = (time.time() - parallel_start) * 1000
+        # Execute all wiki searches concurrently
+        wiki_results_list = await asyncio.gather(*[search_single_wiki(client) for client in wiki_clients])
 
-    # Unpack results
-    meilisearch_results, meilisearch_time_ms, meili_error = meili_task
-    cse_results, cse_time_ms, cache_hit = cse_task
-    wiki_results, wiki_time_ms = wiki_task
+        # Flatten and combine results from all wikis
+        all_wiki_results = []
+        for results in wiki_results_list:
+            all_wiki_results.extend(results)
 
-    # Check for critical Meilisearch errors
-    if meili_error:
-        raise meili_error
+        # Embed results if provider is available
+        if embedding_provider and all_wiki_results:
+            await _embed_results(embedding_provider, all_wiki_results)
 
-    logger.info(f"Parallel search completed in {parallel_time_ms:.2f}ms (fastest: {min(filter(None, [meilisearch_time_ms, cse_time_ms, wiki_time_ms])):.2f}ms)")
+        return all_wiki_results, (time.time() - s) * 1000
 
-    # 3. Apply safety filters in parallel
-    async def filter_async(results, name):
-        """Async wrapper for synchronous filter_results."""
-        filtered = safety_filter.filter_results(results)
-        logger.debug(f"{name}: filtered {len(results)} -> {len(filtered)} results")
-        return filtered
+    query_embedding_task = asyncio.to_thread(embedding_provider.encode, [q]) if RERANKING_ENABLED and embedding_provider else None
 
-    meilisearch_results, cse_results, wiki_results = await asyncio.gather(
-        filter_async(meilisearch_results, "Meilisearch"),
-        filter_async(cse_results, "CSE"),
-        filter_async(wiki_results, "Wiki"),
+    (meili_res, meili_time), (cse_res, cache_hit, cse_time), (wiki_res, wiki_time), query_emb_list = await asyncio.gather(
+        search_meilisearch(), search_cse(), search_wiki(), query_embedding_task or asyncio.sleep(0, result=[None])
     )
 
-    # 4. Merge and deduplicate
-    merged_results = merger.merge(
-        meilisearch_results=meilisearch_results,
-        cse_results=cse_results,
-        limit=limit * 2  # Get more for reranking
-    )
-    # Prepend wiki results so they appear first
-    merged_results = wiki_results + merged_results
+    query_embedding = np.array(query_emb_list[0]) if query_emb_list and query_emb_list[0] else None
 
-    # 5. Apply reranking if enabled
-    reranking_applied = False
-    if use_reranking and RERANKING_ENABLED and reranker:
-        reranking_start = time.time()
-        try:
-            merged_results = reranker.rerank(
-                query=q,
-                results=merged_results,
-                top_k=limit
-            )
-            reranking_time_ms = (time.time() - reranking_start) * 1000
-            reranking_applied = True
-            logger.info(f"Reranking completed in {reranking_time_ms:.2f}ms")
-        except Exception as e:
-            logger.error(f"Reranking failed: {e}", exc_info=True)
-            reranking_time_ms = (time.time() - reranking_start) * 1000
+    meili_res = safety_filter.filter_results(meili_res)
+    cse_res = safety_filter.filter_results(cse_res)
+    wiki_res = safety_filter.filter_results(wiki_res)
+    merged_results = wiki_res + merger.merge(meilisearch_results=meili_res, cse_results=cse_res, limit=limit * 2)
 
-    # Limit final results
+    reranking_applied, reranking_time_ms = False, None
+    if use_reranking and RERANKING_ENABLED and reranker and query_embedding is not None:
+        rerank_start = time.time()
+        merged_results = reranker.rerank(query=q, results=merged_results, top_k=limit, query_embedding=query_embedding)
+        reranking_time_ms = (time.time() - rerank_start) * 1000
+        reranking_applied = True
+
     final_results = merged_results[:limit]
-
-    # Calculate stats
     total_time_ms = (time.time() - start_time) * 1000
 
     stats = SearchStats(
         total_results=len(final_results),
-        meilisearch_results=len(meilisearch_results),
-        cse_results=len(cse_results),
-        wiki_results=len(wiki_results),
+        meilisearch_results=len(meili_res),
+        cse_results=len(cse_res),
+        wiki_results=len(wiki_res),
         processing_time_ms=total_time_ms,
-        meilisearch_time_ms=meilisearch_time_ms,
-        cse_time_ms=cse_time_ms,
-        wiki_time_ms=wiki_time_ms,
+        meilisearch_time_ms=meili_time,
+        cse_time_ms=cse_time,
+        wiki_time_ms=wiki_time,
         reranking_time_ms=reranking_time_ms,
         reranking_applied=reranking_applied,
         cache_hit=cache_hit,
     )
 
-    logger.info(
-        f"Search completed in {total_time_ms:.2f}ms: "
-        f"{stats.total_results} results "
-        f"({stats.meilisearch_results} Meili + {stats.cse_results} CSE + {stats.wiki_results} Wiki)"
-    )
-
-    # Log stats to database
-    if hasattr(request.app.state, "stats_db"):
-        try:
-            request.app.state.stats_db.log_search(
-                query=q,
-                lang=lang.value,
-                limit=limit,
-                use_cse=use_cse,
-                use_hybrid=use_hybrid,
-                use_reranking=use_reranking,
-                stats=stats.model_dump(),
-            )
-        except Exception as e:
-            logger.error(f"Failed to log search stats: {e}")
+    if state.stats_db:
+        state.stats_db.log_search(q, lang.value, limit, use_cse, use_hybrid, use_reranking, stats.model_dump())
 
     return SearchResponse(query=q, results=final_results, stats=stats)
 
-
-@router.post(
-    "/feedback",
-    response_model=FeedbackResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Submit feedback",
-    description="Report inappropriate or problematic search results",
-)
+@router.post("/feedback", response_model=FeedbackResponse, status_code=status.HTTP_200_OK)
 async def submit_feedback(request: Request, feedback: FeedbackRequest) -> FeedbackResponse:
-    """
-    Submit feedback about a search result.
-    Used to report inappropriate content or improve filtering.
-    """
+    state: AppState = request.app.state
+    if state.stats_db:
+        state.stats_db.log_feedback(**feedback.model_dump())
+    return FeedbackResponse(success=True, message="Feedback received.")
 
-    logger.info(
-        f"Feedback received: query='{feedback.query}', "
-        f"result_id={feedback.result_id}, reason={feedback.reason}"
-    )
-
-    # Store feedback in database
-    if hasattr(request.app.state, "stats_db"):
-        try:
-            request.app.state.stats_db.log_feedback(
-                query=feedback.query,
-                result_id=feedback.result_id,
-                result_url=str(feedback.result_url),
-                reason=feedback.reason,
-                comment=feedback.comment,
-            )
-        except Exception as e:
-            logger.error(f"Failed to log feedback: {e}")
-
-    # TODO: Trigger safety filter update if needed
-
-    return FeedbackResponse(
-        success=True, message="Feedback enregistré, merci !"
-    )
-
-
-@router.get(
-    "/stats",
-    response_model=APIStats,
-    status_code=status.HTTP_200_OK,
-    summary="API statistics",
-    description="Get API usage statistics for dashboard monitoring",
-)
+@router.get("/stats", status_code=status.HTTP_200_OK)
 async def get_stats(request: Request) -> JSONResponse:
-    """
-    Get API usage statistics.
-    Used by Streamlit dashboard for monitoring.
-    """
-
-    stats_db = request.app.state.stats_db if hasattr(request.app.state, "stats_db") else None
-    cse_client = request.app.state.cse_client if hasattr(request.app.state, "cse_client") else None
-
+    state: AppState = request.app.state
+    stats_db = state.stats_db
+    cse_client = state.cse_client
+    
     if not stats_db:
-        # Return empty stats if database not initialized
         api_stats = APIStats(
-            total_searches=0,
-            searches_last_hour=0,
-            avg_response_time_ms=0.0,
-            cse_quota_used=0,
-            cse_quota_limit=100,
-            cache_hit_rate=0.0,
-            top_queries=[],
-            error_rate=0.0,
+            total_searches=0, searches_last_hour=0, avg_response_time_ms=0.0,
+            cache_hit_rate=0.0, top_queries=[], error_rate=0.0,
+            cse_quota_used=0, cse_quota_limit=100
         )
     else:
-        # Get stats from database
-        total_searches = stats_db.get_total_searches()
-        searches_last_hour = stats_db.get_searches_last_hour()
-        avg_response_time = stats_db.get_avg_search_time()
-        cache_hit_rate = stats_db.get_cache_hit_rate()
-        top_queries = stats_db.get_top_queries(limit=50) # Increased limit
-        error_rate = stats_db.get_error_rate()
-
-        # Get CSE quota info
-        cse_quota_used = 0
-        cse_quota_limit = 100
-
-        if cse_client:
-            quota_info = cse_client.get_quota_usage()
-            cse_quota_used = quota_info.get("used", 0)
-            cse_quota_limit = quota_info.get("limit", 100)
-
+        cse_quota = cse_client.get_quota_usage() if cse_client else {}
         api_stats = APIStats(
-            total_searches=total_searches,
-            searches_last_hour=searches_last_hour,
-            avg_response_time_ms=avg_response_time,
-            cse_quota_used=cse_quota_used,
-            cse_quota_limit=cse_quota_limit,
-            cache_hit_rate=cache_hit_rate,
-            top_queries=top_queries,
-            error_rate=error_rate,
+            total_searches=stats_db.get_total_searches(),
+            searches_last_hour=stats_db.get_searches_last_hour(),
+            avg_response_time_ms=stats_db.get_avg_search_time(),
+            cache_hit_rate=stats_db.get_cache_hit_rate(),
+            top_queries=stats_db.get_top_queries(limit=50),
+            error_rate=stats_db.get_error_rate(),
+            cse_quota_used=cse_quota.get("used", 0),
+            cse_quota_limit=cse_quota.get("limit", 100),
         )
-
+        
     headers = {"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"}
     return JSONResponse(content=api_stats.model_dump(), headers=headers)
 
-@router.post(
-    "/stats/reset",
-    status_code=status.HTTP_200_OK,
-    summary="Reset API statistics",
-    description="Delete all recorded search queries and feedback.",
-)
+@router.post("/stats/reset", status_code=status.HTTP_200_OK)
 async def reset_stats(request: Request):
-    """
-    Reset all API usage statistics.
-    """
-    stats_db = request.app.state.stats_db if hasattr(request.app.state, "stats_db") else None
-
-    if not stats_db:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Stats database is not initialized.",
-        )
-
-    if stats_db.reset_stats():
-        logger.info("API statistics have been reset.")
-        return {"message": "API statistics reset successfully."}
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to reset API statistics.",
-        )
+    state: AppState = request.app.state
+    if not state.stats_db or not state.stats_db.reset_stats():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to reset API statistics.")
+    logger.info("API statistics have been reset.")
+    return {"message": "API statistics reset successfully."}

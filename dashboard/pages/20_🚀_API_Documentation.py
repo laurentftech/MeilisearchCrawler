@@ -19,10 +19,16 @@ st.title("📚 Documentation API")
 st.markdown("*Documentation et guide de démarrage pour l'API de recherche unifiée*")
 
 # API Configuration
-API_HOST = os.getenv("API_HOST", "localhost")
-API_PORT = os.getenv("API_PORT", "8000")
+API_DISPLAY_HOST = os.getenv("API_DISPLAY_HOST") or os.getenv("API_HOST", "localhost")
+API_PORT = os.getenv("API_PORT", "8080")
 API_ENABLED = os.getenv("API_ENABLED", "false").lower() == "true"
-API_BASE_URL = f"http://{API_HOST}:{API_PORT}/api"
+
+# Build base URL: include port only if not using a reverse proxy (i.e., DISPLAY_HOST == HOST)
+if API_DISPLAY_HOST == os.getenv("API_HOST", "localhost"):
+    API_BASE_URL = f"http://{API_DISPLAY_HOST}:{API_PORT}/api"
+else:
+    # Behind reverse proxy: no port in URL
+    API_BASE_URL = f"http://{API_DISPLAY_HOST}/api"
 
 st.subheader("🚀 Démarrage rapide")
 st.code("""
@@ -31,8 +37,10 @@ st.code("""
 
 # 2. Configurer l'API dans .env
 API_ENABLED=true
-API_HOST=0.0.0.0
-API_PORT=8000
+API_HOST=0.0.0.0  # Interface d'écoute (0.0.0.0 = toutes les interfaces)
+API_PORT=8080
+API_DISPLAY_HOST=localhost  # URL affichée dans la doc (localhost, nom de domaine, etc.)
+                            # Si derrière reverse proxy: domaine sans port (ex: api.example.com)
 
 # 3. Configurer Meilisearch
 MEILI_HTTP_ADDR=http://localhost:7700
@@ -77,7 +85,7 @@ endpoints = [
 ]
 
 df_endpoints = pd.DataFrame(endpoints)
-st.dataframe(df_endpoints, width='stretch', hide_index=True)
+st.dataframe(df_endpoints, use_container_width=True, hide_index=True)
 
 st.markdown("---")
 

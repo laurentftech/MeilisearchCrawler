@@ -184,18 +184,19 @@ with tab2:
     if st.button("🧠 Configure Embeddings", type="primary"):
         with st.spinner("Configuring embeddings..."):
             try:
-                # 1. Try to enable vector store feature, but don't fail if it's deprecated
+                # 1. Try to enable multimodal feature (required for vector search), but don't fail if it's deprecated
                 if embedding_provider != "None":
-                    st.info("Enabling vector store feature...")
+                    st.info("Enabling multimodal feature (required for vector search)...")
                     try:
                         headers = {
                             "Authorization": f"Bearer {MEILI_KEY}",
                             "Content-Type": "application/json"
                         }
-                        payload = {"vectorStore": True}
+                        # Try both 'multimodal' (newer) and 'vectorStore' (older) for compatibility
+                        payload = {"multimodal": True, "vectorStore": True}
                         r = requests.patch(f"{MEILI_URL}/experimental-features", json=payload, headers=headers)
                         r.raise_for_status()
-                        st.success("✅ Vector store feature enabled.")
+                        st.success("✅ Multimodal feature enabled.")
                     except requests.exceptions.HTTPError as e:
                         if e.response.status_code in [400, 404]:
                             st.warning(f"⚠️ Could not enable experimental features (status: {e.response.status_code}). This is expected on recent Meilisearch versions. Continuing...")

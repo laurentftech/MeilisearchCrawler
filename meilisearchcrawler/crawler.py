@@ -877,7 +877,9 @@ class GlobalCrawlStatus:
             "stats": self.stats_by_site,
             "queue_length": self._realtime_queue_length,
             "avg_embedding_batch_time_ms": avg_embedding_time,
-            "avg_indexing_batch_time_ms": avg_indexing_time
+            "avg_indexing_batch_time_ms": avg_indexing_time,
+            "total_embedding_time_ms": self.total_embedding_time_ms,
+            "total_indexing_time_ms": self.total_indexing_time_ms
         }
 
     def save(self):
@@ -948,6 +950,7 @@ class CrawlContext:
         self.exclude_patterns = config.GLOBAL_EXCLUDE_PATTERNS + site.get("exclude", [])
         self.no_index_patterns = site.get("no_index", [])
         self.max_depth = site.get("depth", 3)
+        self.resume_urls_to_save: Optional[Set[str]] = None  # URLs à sauvegarder pour reprise
 
 
 class RateLimiter:
@@ -1214,10 +1217,11 @@ async def crawl_site_html_async(context: CrawlContext, index):
 
         await index_documents_batch(index, documents_buffer, context.stats)
         documents_buffer.clear()
-    if len(to_visit_heap) > 0 and (max_pages > 0 and context.stats.pages_visited >= max_pages):
+
+    # NOUVEAU: Sauvegarder TOUJOURS les URLs restantes si arrêt prématuré (timeout, user interrupt, queue limit, max_pages)
+    if len(to_visit_heap) > 0:
         logger.info(f"📝 Sauvegarde de {len(to_visit_heap)} URLs pour une reprise future.")
-        resume_urls_set = {f"{item[2]}|{item[3]}" for item in to_visit_heap}
-        complete_crawl_session(context.site['name'], completed=False, resume_urls=resume_urls_set)
+        context.resume_urls_to_save = {f"{item[2]}|{item[3]}" for item in to_visit_heap}
 
 
 async def crawl_json_api_async(context: CrawlContext, index):
@@ -1517,7 +1521,9 @@ async def main_async():
                 except Exception as e:
                     logger.error(f"❌ Erreur critique lors du crawl de {site['name']}: {e}", exc_info=args.verbose)
                 finally:
-                    complete_crawl_session(site['name'], completed=completed_successfully)
+                    # Si des URLs doivent être sauvegardées pour reprise, le crawl est incomplet
+                    is_completed = completed_successfully and context.resume_urls_to_save is None
+                    complete_crawl_session(site['name'], completed=is_completed, resume_urls=context.resume_urls_to_save)
                     context.stats.log_summary()
                     global_status.finish_site(context.stats)
                 if completed_successfully and i < len(sites_to_crawl):

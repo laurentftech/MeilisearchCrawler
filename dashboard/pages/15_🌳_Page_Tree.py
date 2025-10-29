@@ -233,7 +233,7 @@ try:
                 text=labels, customdata=hover_texts, hovertemplate=t("tree.hover_size")
             ))
             fig.update_layout(height=800, margin=dict(t=50, l=10, r=10, b=10), title={'text': t(zoom_tip_key), 'x': 0.5, 'xanchor': 'center', 'font': {'size': 14, 'color': '#666'}}, hoverlabel={'bgcolor':"white", 'font_size':13, 'font_family':"Arial"})
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
 
             st.markdown("---")
             st.subheader(t("tree.freshness_dist_title"))
@@ -243,7 +243,7 @@ try:
             freshness_df = pd.DataFrame({t("tree.category"): freshness_counts.index, t("tree.count"): freshness_counts.values})
             fig_freshness = px.bar(freshness_df, x=t("tree.category"), y=t("tree.count"), title=t("tree.freshness_chart_title"), color=t("tree.category"), color_discrete_map=color_map)
             fig_freshness.update_layout(height=400, showlegend=False, xaxis_title="", yaxis_title=t("tree.page_count"))
-            st.plotly_chart(fig_freshness, width='stretch')
+            st.plotly_chart(fig_freshness, use_container_width=True)
 
             st.markdown("---")
             col1, col2 = st.columns(2)
@@ -256,7 +256,7 @@ try:
                     # Sélectionner et renommer les colonnes pour l'affichage
                     display_df = old_pages[['title', 'site', 'last_crawl_days', 'freshness_days']].copy()
                     display_df.columns = [t("tree.col_title"), t("tree.col_site"), t("tree.col_crawl_days"), t("tree.col_index_days")]
-                    st.dataframe(display_df, width='stretch', hide_index=True, height=400)
+                    st.dataframe(display_df, use_container_width=True, hide_index=True, height=400)
                 else: st.info(t("tree.all_pages_up_to_date"))
 
             with col2:
@@ -267,7 +267,7 @@ try:
                     # Sélectionner et renommer les colonnes pour l'affichage
                     display_df_recent = recent_pages[['title', 'site', 'last_crawl_days', 'freshness_days']].copy()
                     display_df_recent.columns = [t("tree.col_title"), t("tree.col_site"), t("tree.col_crawl_days"), t("tree.col_index_days")]
-                    st.dataframe(display_df_recent, width='stretch', hide_index=True, height=400)
+                    st.dataframe(display_df_recent, use_container_width=True, hide_index=True, height=400)
                 else: st.info(t("tree.no_recent_crawls"))
 
             st.markdown("---")

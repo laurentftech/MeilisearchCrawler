@@ -70,8 +70,19 @@ def get_embedding_stats(force_refresh_key=None):
             return {"total": 0, "with_vectors": 0, "without_vectors": 0, "config_ok": config_ok, "has_default": has_default, "has_query": has_query}
 
         # Compter les documents sans embeddings (syntaxe de la nouvelle SDK)
-        res = index.search("", filter='_vectors.default NOT EXISTS', limit=0)
-        without_vectors = res.estimated_total_hits
+        try:
+            res = index.search("", filter='_vectors.default NOT EXISTS', limit=0)
+            without_vectors = res.estimated_total_hits
+        except MeilisearchApiError as e:
+            if e.code == "feature_not_enabled" and "multimodal" in str(e):
+                # La fonctionnalité multimodal n'est pas activée
+                st.error("⚠️ La fonctionnalité 'multimodal' n'est pas activée dans Meilisearch!", icon="🚨")
+                st.info("Cette fonctionnalité est requise pour utiliser les embeddings vectoriels.")
+                st.info("👉 Allez à la page **Meilisearch Server** et configurez les embeddings pour activer automatiquement cette fonctionnalité.")
+                st.page_link("pages/18_☁️_Meilisearch_Server.py", label="Configurer Meilisearch", icon="☁️")
+                return None
+            else:
+                raise  # Re-raise other MeilisearchApiError
 
         return {
             "total": total_docs,
@@ -81,6 +92,9 @@ def get_embedding_stats(force_refresh_key=None):
             "has_default": has_default,
             "has_query": has_query
         }
+    except MeilisearchApiError as e:
+        st.error(f"{t('embeddings.error_stats')}: MeilisearchApiError.{e.code} {e.message}")
+        return None
     except Exception as e:
         st.error(f"{t('embeddings.error_stats')}: {e}")
         return None
@@ -211,7 +225,7 @@ if stats:
                 on_click=run_embedding_process,
                 disabled=process_running or without_vectors == 0,
                 type="primary",
-                width='stretch'
+                use_container_width=True
             )
         with col_btn2:
             if process_running:

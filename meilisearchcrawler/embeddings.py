@@ -3,40 +3,41 @@ from typing import List, Optional
 import logging
 import os
 import requests
-
+from cachetools import LRUCache
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 
 class EmbeddingProvider(ABC):
-    """Interface abstraite pour les providers d'embeddings"""
+    """Abstract interface for embedding providers"""
 
     def __init__(self, model_name: str):
         self.model_name = model_name
-        self.embedding_dim = None  # Sera défini par les sous-classes
+        self.embedding_dim = None  # To be set by subclasses
 
     @abstractmethod
     def encode(self, texts: List[str]) -> List[List[float]]:
-        """Génère des embeddings pour une liste de textes"""
+        """Generate embeddings for a list of texts"""
         pass
 
     @abstractmethod
     def get_embedding_dim(self) -> int:
-        """Retourne la dimension des embeddings"""
+        """Return the dimension of the embeddings"""
 
     @abstractmethod
     def get_provider_name(self) -> str:
-        """Retourne le nom générique du provider (ex: 'gemini')."""
+        """Return the generic name of the provider (e.g., 'gemini')."""
         pass
 
     @abstractmethod
     def get_model_name(self) -> str:
-        """Retourne le nom spécifique du modèle (ex: 'intfloat/multilingual-e5-base')."""
+        """Return the specific name of the model (e.g., 'intfloat/multilingual-e5-base')."""
         pass
 
 
 class GeminiEmbeddingProvider(EmbeddingProvider):
-    """Provider utilisant Google Gemini pour les embeddings"""
+    """Provider using Google Gemini for embeddings"""
 
     def __init__(self, api_key: str, model_name: str = "text-embedding-004"):
         super().__init__(model_name)
@@ -45,14 +46,14 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         try:
             from google import genai
             self.client = genai.Client(api_key=api_key)
-            logger.info(f"✓ Gemini initialisé avec le modèle {model_name}")
+            logger.info(f"✓ Gemini initialized with model {model_name}")
         except ImportError:
-            raise ImportError("Le package 'google-genai' est requis pour Gemini. Installez-le avec: pip install google-genai")
+            raise ImportError("'google-genai' package is required for Gemini. Install with: pip install google-genai")
         except Exception as e:
-            raise RuntimeError(f"Impossible d'initialiser Gemini: {e}")
+            raise RuntimeError(f"Could not initialize Gemini: {e}")
 
     def encode(self, texts: List[str]) -> List[List[float]]:
-        """Génère des embeddings avec l'API Gemini"""
+        """Generate embeddings with the Gemini API"""
         try:
             result = self.client.models.embed_content(
                 model=f"models/{self.model_name}",
@@ -60,7 +61,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             )
             return [embedding.values for embedding in result.embeddings]
         except Exception as e:
-            logger.error(f"❌ Erreur lors de l'encodage avec Gemini: {e}")
+            logger.error(f"❌ Error during encoding with Gemini: {e}")
             return [[] for _ in texts]
 
     def get_embedding_dim(self) -> int:
@@ -74,7 +75,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
 
 class HuggingFaceInferenceAPIEmbeddingProvider(EmbeddingProvider):
-    """Provider utilisant une API d'inférence Hugging Face (comme text-embeddings-inference)"""
+    """Provider using a Hugging Face Inference API (like text-embeddings-inference)"""
 
     MODEL_DIMENSIONS = {
         'intfloat/multilingual-e5-small': 384,
@@ -89,71 +90,100 @@ class HuggingFaceInferenceAPIEmbeddingProvider(EmbeddingProvider):
         super().__init__(model_name)
         self.api_url = api_url
         self.embedding_dim = self.MODEL_DIMENSIONS.get(model_name, 768)
+        self.batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE", "16"))
+        self.timeout = int(os.getenv("EMBEDDING_TIMEOUT", "10"))
+        self._embedding_cache = LRUCache(maxsize=int(os.getenv("EMBEDDING_CACHE_SIZE", "2048")))
 
         try:
             import requests
         except ImportError:
-            raise ImportError("Le package 'requests' est requis. Installez-le avec: pip install requests")
+            raise ImportError("'requests' package is required. Install with: pip install requests")
 
-        logger.info(f"✓ HuggingFace Inference API provider initialisé pour le modèle {model_name} sur {self.api_url}")
-        # Test connection
+        logger.info(f"✓ HuggingFace Inference API provider initialized for model {model_name} on {api_url}")
+        self._verify_api_connection()
+
+    def _verify_api_connection(self):
         try:
-            # remove /embed from url to get /info
             base_url = self.api_url.rsplit('/', 1)[0]
             response = requests.get(f"{base_url}/info", timeout=5)
             response.raise_for_status()
             info = response.json()
-            logger.info(f"✓ Connexion à l'API d'inférence réussie: version {info.get('version')}, modèle {info.get('model_id')}")
-            # Override model_name with info from API if they don't match
+            logger.info(f"✓ Inference API connection successful: version {info.get('version')}, model {info.get('model_id')}")
+            
             if self.model_name != info.get('model_id'):
-                logger.warning(f"Le modèle configuré ({self.model_name}) est différent de celui de l'API ({info.get('model_id')}). Utilisation du modèle de l'API.")
+                logger.warning(f"Configured model ({self.model_name}) differs from API model ({info.get('model_id')}). Using API model.")
                 self.model_name = info.get('model_id')
-                # Update dimension based on new model name
                 self.embedding_dim = self.MODEL_DIMENSIONS.get(self.model_name, self.embedding_dim)
 
-            # L'API /info ne retourne pas la dimension, donc on fait un test
-            try:
-                test_response = requests.post(
-                    self.api_url,
-                    json={"inputs": ["test"], "normalize": True, "truncate": True},
-                    headers={"Content-Type": "application/json"},
-                    timeout=5
-                )
-                test_response.raise_for_status()
-                test_embeddings = test_response.json()
-                if isinstance(test_embeddings, list) and len(test_embeddings) > 0 and isinstance(test_embeddings[0], list):
-                    detected_dim = len(test_embeddings[0])
-                    if detected_dim != self.embedding_dim:
-                        logger.warning(f"La dimension configurée ({self.embedding_dim}D) est différente de celle détectée ({detected_dim}D). Utilisation de la dimension détectée.")
-                        self.embedding_dim = detected_dim
-                    else:
-                        logger.info(f"✓ Dimension vérifiée: {self.embedding_dim}D")
-            except Exception as e:
-                logger.warning(f"Impossible de vérifier la dimension via un test: {e}. Utilisation de {self.embedding_dim}D")
-
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Impossible de se connecter à l'API d'inférence Hugging Face sur {self.api_url}: {e}")
-        except Exception as e:
-            logger.warning(f"Impossible de vérifier les informations de l'API d'inférence: {e}")
-
-
-    def encode(self, texts: List[str]) -> List[List[float]]:
-        """Génère des embeddings avec l'API d'inférence Hugging Face"""
-        try:
-            response = requests.post(
+            test_response = requests.post(
                 self.api_url,
-                json={"inputs": texts, "normalize": True, "truncate": True},
-                headers={"Content-Type": "application/json"}
+                json={"inputs": ["test"], "normalize": True, "truncate": True},
+                headers={"Content-Type": "application/json"},
+                timeout=5
             )
-            response.raise_for_status()
-            embeddings = response.json()
-            return embeddings
+            test_response.raise_for_status()
+            test_embeddings = test_response.json()
+            if isinstance(test_embeddings, list) and len(test_embeddings) > 0 and isinstance(test_embeddings[0], list):
+                detected_dim = len(test_embeddings[0])
+                if detected_dim != self.embedding_dim:
+                    logger.warning(f"Configured dimension ({self.embedding_dim}D) differs from detected ({detected_dim}D). Using detected dimension.")
+                    self.embedding_dim = detected_dim
+                else:
+                    logger.info(f"✓ Dimension verified: {self.embedding_dim}D")
+
         except requests.exceptions.RequestException as e:
-            logger.error(f"❌ Erreur API Hugging Face: {e}")
-            return [[] for _ in texts]
+            raise RuntimeError(f"Could not connect to Hugging Face Inference API at {self.api_url}: {e}")
         except Exception as e:
-            logger.error(f"❌ Erreur lors de l'encodage avec l'API Hugging Face: {e}")
-            return [[] for _ in texts]
+            logger.warning(f"Could not verify inference API info: {e}")
+
+    def encode(self, texts: List[str]) -> List[Optional[List[float]]]:
+        """Generate embeddings with batching, caching, and error handling."""
+        if not texts:
+            return []
+
+        results: List[Optional[List[float]]] = [None] * len(texts)
+        uncached_texts: List[str] = []
+        uncached_indices: List[int] = []
+
+        for i, text in enumerate(texts):
+            if text in self._embedding_cache:
+                results[i] = self._embedding_cache[text]
+            else:
+                uncached_texts.append(text)
+                uncached_indices.append(i)
+
+        if not uncached_texts:
+            logger.debug(f"All {len(texts)} embeddings retrieved from cache.")
+            return results
+
+        logger.debug(f"Requesting {len(uncached_texts)} embeddings in batches of {self.batch_size}.")
+
+        for i in range(0, len(uncached_texts), self.batch_size):
+            batch_texts = uncached_texts[i:i + self.batch_size]
+            batch_indices = uncached_indices[i:i + self.batch_size]
+
+            try:
+                response = requests.post(
+                    self.api_url,
+                    json={"inputs": batch_texts, "normalize": True, "truncate": True},
+                    headers={"Content-Type": "application/json"},
+                    timeout=self.timeout
+                )
+                response.raise_for_status()
+                embeddings = response.json()
+
+                for j, embedding in enumerate(embeddings):
+                    original_index = batch_indices[j]
+                    original_text = batch_texts[j]
+                    results[original_index] = embedding
+                    self._embedding_cache[original_text] = embedding
+
+            except requests.Timeout:
+                logger.warning(f"Timeout ({self.timeout}s) for embedding batch of {len(batch_texts)} texts.")
+            except Exception as e:
+                logger.error(f"Hugging Face API error for batch: {e}")
+        
+        return results
 
     def get_embedding_dim(self) -> int:
         return self.embedding_dim
@@ -166,14 +196,14 @@ class HuggingFaceInferenceAPIEmbeddingProvider(EmbeddingProvider):
 
 
 class NoEmbeddingProvider(EmbeddingProvider):
-    """Provider vide (pas d'embeddings)"""
+    """Empty provider (no embeddings)"""
 
     def __init__(self):
         super().__init__("none")
         self.embedding_dim = 0
 
     def encode(self, texts: List[str]) -> List[List[float]]:
-        """Retourne des embeddings vides"""
+        """Return empty embeddings"""
         return [[] for _ in texts]
 
     def get_embedding_dim(self) -> int:
@@ -188,33 +218,33 @@ class NoEmbeddingProvider(EmbeddingProvider):
 
 def create_embedding_provider(provider_name: Optional[str] = None) -> EmbeddingProvider:
     """
-    Factory pour créer un provider d'embeddings basé sur la configuration
+    Factory to create an embedding provider based on configuration.
 
-    Args:\
-        provider_name: Nom du provider ('gemini', 'huggingface', 'none')
-                      Si None, lit depuis EMBEDDING_PROVIDER dans .env
+    Args:
+        provider_name: Name of the provider ('gemini', 'huggingface', 'none')
+                      If None, reads from EMBEDDING_PROVIDER in .env
 
     Returns:
-        Instance du provider d'embeddings
+        Instance of the embedding provider
     """
     if provider_name is None:
         provider_name = os.getenv('EMBEDDING_PROVIDER', 'none').lower()
 
     provider_name = provider_name.lower().strip()
 
-    logger.info(f"🔧 Configuration du provider d'embeddings: {provider_name}")
+    logger.info(f"🔧 Configuring embedding provider: {provider_name}")
 
     if provider_name == 'gemini':
         api_key = os.getenv('GEMINI_API_KEY')
         if not api_key:
-            logger.warning("⚠️  GEMINI_API_KEY non trouvée - embeddings désactivés")
+            logger.warning("⚠️ GEMINI_API_KEY not found - embeddings disabled")
             return NoEmbeddingProvider()
 
         try:
             return GeminiEmbeddingProvider(api_key=api_key)
         except Exception as e:
-            logger.error(f"❌ Échec initialisation Gemini: {e}")
-            logger.warning("   Basculement vers mode sans embeddings")
+            logger.error(f"❌ Gemini initialization failed: {e}")
+            logger.warning("   Switching to no-embedding mode")
             return NoEmbeddingProvider()
 
     elif provider_name == 'huggingface':
@@ -224,15 +254,15 @@ def create_embedding_provider(provider_name: Optional[str] = None) -> EmbeddingP
         try:
             return HuggingFaceInferenceAPIEmbeddingProvider(model_name=model_name, api_url=api_url)
         except Exception as e:
-            logger.error(f"❌ Échec initialisation HuggingFace Inference API: {e}")
-            logger.warning("   Basculement vers mode sans embeddings")
+            logger.error(f"❌ HuggingFace Inference API initialization failed: {e}")
+            logger.warning("   Switching to no-embedding mode")
             return NoEmbeddingProvider()
 
     elif provider_name == 'none':
-        logger.info("ℹ️  Embeddings désactivés")
+        logger.info("ℹ️ Embeddings disabled")
         return NoEmbeddingProvider()
 
     else:
-        logger.warning(f"⚠️  Provider inconnu '{provider_name}' - embeddings désactivés")
-        logger.info("   Providers disponibles: gemini, huggingface, none")
+        logger.warning(f"⚠️ Unknown provider '{provider_name}' - embeddings disabled")
+        logger.info("   Available providers: gemini, huggingface, none")
         return NoEmbeddingProvider()

@@ -25,11 +25,15 @@ st.title("📊 API Monitor")
 st.markdown("*Surveillance du backend de recherche unifiée*")
 
 # API Configuration
-API_HOST = os.getenv("API_HOST", "localhost")
+API_HOST = os.getenv("API_HOST", "localhost")  # Real URL for direct connection
+API_DISPLAY_HOST = os.getenv("API_DISPLAY_HOST", API_HOST)  # URL shown to users (may be behind reverse proxy)
 API_PORT = os.getenv("API_PORT", "8000")
 API_ENABLED = os.getenv("API_ENABLED", "false").lower() == "true"
 
+# Use real host for making requests from dashboard
 API_BASE_URL = f"http://{API_HOST}:{API_PORT}/api"
+# URL to display to user (may not include port if behind reverse proxy)
+API_DISPLAY_URL = f"http://{API_DISPLAY_HOST}" + (f":{API_PORT}" if API_DISPLAY_HOST == API_HOST else "") + "/api"
 
 @st.cache_data(ttl=5) # Cache for 5 seconds
 def get_api_data():
@@ -58,9 +62,9 @@ if not API_ENABLED:
 api_running, health_data, stats_data = get_api_data()
 
 if api_running:
-    st.success(f"✅ API en ligne - {API_BASE_URL}")
+    st.success(f"✅ API en ligne - {API_DISPLAY_URL}")
 else:
-    st.error(f"❌ API hors ligne - {API_BASE_URL}")
+    st.error(f"❌ API hors ligne - {API_DISPLAY_URL}")
     st.info("Démarrer l'API avec: `python api.py`")
     st.stop()
 
