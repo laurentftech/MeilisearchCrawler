@@ -41,6 +41,18 @@ def fetch_metrics():
         return None
 
 
+def reset_metrics():
+    """Reset all API metrics."""
+    try:
+        reset_endpoint = f"{API_URL}/api/metrics/reset"
+        response = requests.post(reset_endpoint, timeout=5)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Failed to reset metrics: {e}")
+        return None
+
+
 def parse_metrics(metrics_text):
     """Parse Prometheus text format into a dictionary of metrics."""
     metrics = {}
@@ -53,8 +65,20 @@ def parse_metrics(metrics_text):
 
 # --- Display Metrics ---
 
-if st.button(t("api_metrics.refresh_button")):
-    st.cache_data.clear()
+col1, col2 = st.columns([1, 4])
+with col1:
+    if st.button(t("api_metrics.refresh_button")):
+        st.cache_data.clear()
+
+with col2:
+    if st.button("🗑️ Réinitialiser les métriques", type="secondary", help="Supprime toutes les statistiques et réinitialise les métriques à zéro"):
+        result = reset_metrics()
+        if result and result.get("status") == "success":
+            st.success("✅ Les métriques ont été réinitialisées avec succès")
+            st.cache_data.clear()
+            st.rerun()
+        else:
+            st.error("❌ Échec de la réinitialisation des métriques")
 
 metrics_text = fetch_metrics()
 

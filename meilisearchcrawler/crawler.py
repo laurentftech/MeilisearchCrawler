@@ -336,7 +336,7 @@ async def update_meilisearch_settings(index, with_embeddings=False):
             'content', 'lang', 'indexed_at', 'last_crawled_at', 'content_hash'
         ],
         'filterable_attributes': ['site', 'timestamp', 'lang', 'indexed_at', 'last_crawled_at', 'title', 'content',
-                                  'embedding_provider', 'embedding_model', 'embedding_dimensions'],
+                                  'embedding_provider', 'embedding_model', 'embedding_dimensions', '_vectors.default'],
         'sortable_attributes': ['timestamp', 'indexed_at', 'last_crawled_at'],
         'ranking_rules': ['words', 'typo', 'proximity', 'attribute', 'sort', 'exactness']
     }

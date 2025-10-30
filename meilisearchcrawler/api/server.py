@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Gauge
 
-from .routes import health, search
+from .routes import health, search, metrics
 from .services.meilisearch_client import MeilisearchClient
 from .services.cse_client import CSEClient
 from .services.wiki_client import WikiClient
@@ -79,18 +79,24 @@ async def lifespan(app: FastAPI):
         site_name = os.getenv(f"{prefix}SITE_NAME")
 
         if api_url and site_url and site_name:
+            # Clean values (remove quotes if present)
+            api_url = api_url.strip().strip('"').strip("'")
+            site_url = site_url.strip().strip('"').strip("'")
+            site_name = site_name.strip().strip('"').strip("'")
+
             try:
                 wiki_client = WikiClient(api_url=api_url, site_url=site_url, site_name=site_name)
                 app.state.wiki_clients.append(wiki_client)
                 logger.info(f"✓ Wiki client #{wiki_index} initialized: {site_name}")
             except Exception as e:
-                logger.error(f"✗ Failed to initialize wiki client #{wiki_index}: {e}")
+                logger.error(f"✗ Failed to initialize wiki client #{wiki_index}: {e}", exc_info=True)
         elif wiki_index == 1:
             # No wiki configured at all
             logger.info("No wiki clients configured")
             break
         else:
             # No more wikis to configure
+            logger.info(f"✓ Total wiki clients initialized: {len(app.state.wiki_clients)}")
             break
 
         wiki_index += 1
@@ -149,6 +155,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(health.router, prefix="/api", tags=["Health"])
     app.include_router(search.router, prefix="/api", tags=["Search"])
+    app.include_router(metrics.router, prefix="/api", tags=["Metrics"])
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request, exc):

@@ -130,7 +130,7 @@ class WikiClient:
             logger.debug(f"Using aiohttp to search wiki: {self.site_name}")
             data = await self._fetch_with_aiohttp(params)
 
-        if not data or 'query' not in data or 'search' not in data:
+        if not data or 'query' not in data or 'search' not in data['query']:
             return []
 
         results = []

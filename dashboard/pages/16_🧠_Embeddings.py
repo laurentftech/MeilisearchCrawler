@@ -75,12 +75,25 @@ def get_embedding_stats(force_refresh_key=None):
             without_vectors = res.estimated_total_hits
         except MeilisearchApiError as e:
             # Vérifier si c'est une erreur liée aux embedders non configurés
-            if e.code == "invalid_search_filter" or "embedder" in str(e).lower():
-                st.error("⚠️ Les embedders ne sont pas configurés dans Meilisearch!", icon="🚨")
-                st.info("Vous devez configurer les embedders avant de pouvoir utiliser les embeddings vectoriels.")
-                st.info("👉 Allez à la page **Meilisearch Server** → onglet **Embeddings** et configurez les embedders.")
-                st.page_link("pages/18_☁️_Meilisearch_Server.py", label="Configurer Meilisearch", icon="☁️")
-                return None
+            if e.code == "invalid_search_filter":
+                # Vérifier si l'erreur est due à _vectors.default non filtrable
+                if "_vectors.default" in str(e).lower() or "filterable" in str(e).lower():
+                    st.error("⚠️ L'attribut `_vectors.default` n'est pas dans les attributs filtrables!", icon="🚨")
+                    st.warning("**Solution:** Exécutez la commande suivante pour ajouter `_vectors.default` aux attributs filtrables:")
+                    st.code("python update_filterable_attributes.py", language="bash")
+                    st.info("Après avoir exécuté cette commande, relancez le crawler ou mettez à jour l'index.")
+                    return None
+                elif "embedder" in str(e).lower():
+                    st.error("⚠️ Les embedders ne sont pas configurés dans Meilisearch!", icon="🚨")
+                    st.info("Vous devez configurer les embedders avant de pouvoir utiliser les embeddings vectoriels.")
+                    st.info("👉 Allez à la page **Meilisearch Server** → onglet **Embeddings** et configurez les embedders.")
+                    st.page_link("pages/18_☁️_Meilisearch_Server.py", label="Configurer Meilisearch", icon="☁️")
+                    return None
+                else:
+                    # Autre erreur de filtre invalide
+                    st.error(f"❌ Erreur de filtre: {e.message}")
+                    st.code(str(e), language="text")
+                    return None
             # Pour les versions récentes de Meilisearch, la feature multimodal n'existe plus ou est activée par défaut
             # On essaie une approche alternative : compter tous les docs et ceux avec vecteurs
             elif e.code == "feature_not_enabled":
@@ -90,8 +103,10 @@ def get_embedding_stats(force_refresh_key=None):
                     res_with = index.search("", filter='_vectors.default EXISTS', limit=0)
                     with_vectors = res_with.estimated_total_hits
                     without_vectors = total_docs - with_vectors
-                except:
-                    # Si même ça échoue, on suppose qu'aucun document n'a d'embeddings
+                except Exception as e2:
+                    # Si même ça échoue, afficher l'erreur détaillée
+                    st.error(f"❌ Impossible de compter les documents avec vecteurs: {str(e2)}")
+                    st.code(str(e2), language="text")
                     without_vectors = total_docs
             else:
                 raise  # Re-raise other MeilisearchApiError

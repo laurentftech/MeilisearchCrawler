@@ -9,7 +9,7 @@ from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
-STATUS_FILE_PATH = Path(__file__).parent.parent.parent.parent / "status.json"
+STATUS_FILE_PATH = Path(__file__).parent.parent.parent.parent / "data" / "status.json"
 
 def get_crawl_status() -> Dict[str, Any]:
     """Reads the content of the status.json file."""
