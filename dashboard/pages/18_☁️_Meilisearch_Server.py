@@ -358,7 +358,8 @@ with col1:
         if confirm_delete == INDEX_NAME:
             with st.spinner("Deleting index..."):
                 try:
-                    task = client.delete_index(uid=INDEX_NAME)
+                    index = client.index(INDEX_NAME)
+                    task = index.delete()
                     client.wait_for_task(task.task_uid)
                     st.success(f"✅ Index '{INDEX_NAME}' deleted successfully!")
                 except Exception as e:

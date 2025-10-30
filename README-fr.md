@@ -1,4 +1,4 @@
-# API KidSearch &  Meilisearch Crawler
+# API KidSearch & Meilisearch Crawler
 
 Ce projet fournit une solution backend complète pour un moteur de recherche sécurisé comme [KidSearch](https://github.com/laurentftech/kidsearch). Il se compose de deux éléments principaux :
 
@@ -12,7 +12,7 @@ Cette combinaison crée un backend de recherche puissant et flexible, capable de
 ### Serveur API KidSearch
 - **Backend FastAPI**: Un serveur d'API léger et performant pour exposer les fonctionnalités de recherche.
 - **Recherche Fédérée**: Agrège en temps réel les résultats de plusieurs sources : l'index Meilisearch local, Google Custom Search (GSE) et les API Wikipedia/Vikidia.
-- **Reclassement Hybride Local (Reranking)**: Récupère les résultats de toutes les sources, puis utilise un modèle de *cross-encoder* local pour reclasser intelligemment la liste combinée en fonction de la pertinence sémantique, assurant que le meilleur contenu est toujours priorisé.
+- **Reclassement Hybride Optimisé**: Récupère les résultats de toutes les sources, calcule les embeddings manquants à la volée, puis utilise un modèle *cross-encoder* local pour reclasser intelligemment la liste combinée en fonction de la pertinence sémantique. Cette approche garantit que le meilleur contenu est toujours priorisé avec une latence minimale.
 - **Prêt pour la Production**: Peut être facilement déployé en tant que conteneur Docker.
 
 ### Cœur du Crawler

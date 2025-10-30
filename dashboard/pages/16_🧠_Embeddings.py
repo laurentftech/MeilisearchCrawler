@@ -74,13 +74,25 @@ def get_embedding_stats(force_refresh_key=None):
             res = index.search("", filter='_vectors.default NOT EXISTS', limit=0)
             without_vectors = res.estimated_total_hits
         except MeilisearchApiError as e:
-            if e.code == "feature_not_enabled" and "multimodal" in str(e):
-                # La fonctionnalité multimodal n'est pas activée
-                st.error("⚠️ La fonctionnalité 'multimodal' n'est pas activée dans Meilisearch!", icon="🚨")
-                st.info("Cette fonctionnalité est requise pour utiliser les embeddings vectoriels.")
-                st.info("👉 Allez à la page **Meilisearch Server** et configurez les embeddings pour activer automatiquement cette fonctionnalité.")
+            # Vérifier si c'est une erreur liée aux embedders non configurés
+            if e.code == "invalid_search_filter" or "embedder" in str(e).lower():
+                st.error("⚠️ Les embedders ne sont pas configurés dans Meilisearch!", icon="🚨")
+                st.info("Vous devez configurer les embedders avant de pouvoir utiliser les embeddings vectoriels.")
+                st.info("👉 Allez à la page **Meilisearch Server** → onglet **Embeddings** et configurez les embedders.")
                 st.page_link("pages/18_☁️_Meilisearch_Server.py", label="Configurer Meilisearch", icon="☁️")
                 return None
+            # Pour les versions récentes de Meilisearch, la feature multimodal n'existe plus ou est activée par défaut
+            # On essaie une approche alternative : compter tous les docs et ceux avec vecteurs
+            elif e.code == "feature_not_enabled":
+                st.warning("⚠️ Détection automatique des embeddings impossible. Utilisation d'une méthode alternative...", icon="⚠️")
+                # Fallback: essayer de chercher avec le filtre inversé
+                try:
+                    res_with = index.search("", filter='_vectors.default EXISTS', limit=0)
+                    with_vectors = res_with.estimated_total_hits
+                    without_vectors = total_docs - with_vectors
+                except:
+                    # Si même ça échoue, on suppose qu'aucun document n'a d'embeddings
+                    without_vectors = total_docs
             else:
                 raise  # Re-raise other MeilisearchApiError
 

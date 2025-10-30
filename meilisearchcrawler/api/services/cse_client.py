@@ -166,6 +166,7 @@ class CSEClient:
         # Add Referer header to pass HTTP referrer restrictions
         headers = {
             "Referer": os.environ.get("FRONTEND_URL", ""),
+            "Accept-Encoding": "gzip, deflate",
         }
 
         async with aiohttp.ClientSession() as session:

@@ -27,12 +27,28 @@ USER_AGENT = os.getenv('USER_AGENT', 'KidSearch-Crawler/2.0 (+https://github.com
 class WikiClient:
     """A client to search a MediaWiki site like Vikidia."""
 
-    def __init__(self, api_url: str, site_url: str, site_name: str):
+    def __init__(self, api_url: str, site_url: str, site_name: str, lang: str = None):
         self.api_url = api_url
         self.site_url = site_url
         self.site_name = site_name
         self.user_agent = USER_AGENT
         self.ssl_context = ssl.create_default_context(cafile=certifi.where())
+
+        # Auto-detect language from API URL if not provided
+        if lang is None:
+            if 'en.wikipedia' in api_url or 'en.vikidia' in api_url:
+                self.lang = 'en'
+            elif 'fr.wikipedia' in api_url or 'fr.vikidia' in api_url:
+                self.lang = 'fr'
+            elif 'es.wikipedia' in api_url:
+                self.lang = 'es'
+            elif 'de.wikipedia' in api_url:
+                self.lang = 'de'
+            else:
+                # Default to English for unknown
+                self.lang = 'en'
+        else:
+            self.lang = lang
 
     def _use_cloudflare_bypass(self) -> bool:
         """Determines if curl_cffi should be used to bypass Cloudflare."""
@@ -42,9 +58,13 @@ class WikiClient:
         """Makes a request using curl_cffi to bypass Cloudflare."""
         async with CurlAsyncSession() as session:
             try:
+                headers = {
+                    'Accept-Encoding': 'gzip, deflate'
+                }
                 response = await session.get(
                     self.api_url,
                     params=params,
+                    headers=headers,
                     impersonate="chrome120",
                     timeout=10
                 )
@@ -56,10 +76,20 @@ class WikiClient:
 
     async def _fetch_with_aiohttp(self, params: dict) -> dict:
         """Makes a request using aiohttp with a proper User-Agent."""
+        # Build Accept-Language header based on wiki language
+        accept_lang_map = {
+            'fr': 'fr-FR,fr;q=0.9,en;q=0.8',
+            'en': 'en-US,en;q=0.9',
+            'es': 'es-ES,es;q=0.9,en;q=0.8',
+            'de': 'de-DE,de;q=0.9,en;q=0.8'
+        }
+        accept_language = accept_lang_map.get(self.lang, 'en-US,en;q=0.9')
+
         headers = {
             'User-Agent': self.user_agent,
             'Accept': 'application/json',
-            'Accept-Language': 'fr-FR,fr;q=0.9'
+            'Accept-Language': accept_language,
+            'Accept-Encoding': 'gzip, deflate'
         }
         async with aiohttp.ClientSession(headers=headers, connector=aiohttp.TCPConnector(ssl=self.ssl_context)) as session:
             try:

@@ -12,7 +12,7 @@ This combination creates a powerful and flexible search backend, capable of deli
 ### KidSearch API Server
 - **FastAPI Backend**: A lightweight, high-performance API server to expose search functionalities.
 - **Federated Search**: Aggregates results from multiple sources in real-time: the local Meilisearch index, Google Custom Search (GSE), and Wikipedia/Vikidia APIs.
-- **Local Hybrid Reranking**: Fetches results from all sources, then uses a local cross-encoder model to intelligently rerank the combined list based on semantic relevance, ensuring the best content is always prioritized.
+- **Optimized Hybrid Reranking**: Fetches results from all sources, computes missing embeddings on-the-fly, and then uses a local cross-encoder model to intelligently rerank the combined list based on semantic relevance. This ensures the best content is always prioritized with minimal latency.
 - **Ready for Production**: Can be easily deployed as a Docker container.
 
 ### Core Crawler
@@ -126,6 +126,7 @@ Run the `api.py` script to start the FastAPI server, which exposes the search en
 ```sh
 python api.py
 ```
+
 The API will be available at `http://localhost:8000`. You can access the interactive documentation at `http://localhost:8000/docs`.
 
 ### Interactive Dashboard

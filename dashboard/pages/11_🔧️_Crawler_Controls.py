@@ -78,12 +78,12 @@ with col1:
     # Option de cache persistant
     persistent_cache = st.checkbox(
         t("controls.persistent_cache"),
-        value=False,
+        value=True,
         disabled=controls_disabled,
         help="Exploration en profondeur : ne jamais re-crawler les URLs déjà visitées. Idéal pour découvrir tout le contenu du site sans répétition."
     )
 
-    workers = st.slider(t("controls.workers"), 1, 20, 5, disabled=controls_disabled)
+    workers = st.slider(t("controls.workers"), 1, 20, 2, disabled=controls_disabled)
 
     site_param = None if selected_site == t("controls.all_sites") else selected_site
 
