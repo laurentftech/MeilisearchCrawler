@@ -30,10 +30,15 @@ if not auth_logger.handlers:
     auth_logger.addHandler(file_handler)
 
 
-@st.cache_resource
 def get_cookie_manager():
-    """Retourne le gestionnaire de cookies (cache persistant)."""
-    return stx.CookieManager()
+    """Retourne le gestionnaire de cookies.
+
+    Note: CookieManager est stocké dans session_state pour éviter les erreurs de clés dupliquées.
+    Streamlit exige qu'un seul CookieManager soit créé par session pour éviter les conflits de clés.
+    """
+    if 'cookie_manager' not in st.session_state:
+        st.session_state.cookie_manager = stx.CookieManager()
+    return st.session_state.cookie_manager
 
 
 def _hash_password(password: str) -> str:
@@ -418,11 +423,9 @@ def check_authentication():
     session_manager = get_session_manager()
     cookie_manager = get_cookie_manager()
 
-    # Vérifier si on a un session_id dans les cookies du navigateur
-    if not cookie_manager.ready:
-        st.stop()  # Attendre que le cookie manager soit prêt
-
-    session_id = cookie_manager.get('auth_session_id')
+    # Récupérer le session_id depuis les cookies du navigateur
+    # CookieManager retourne un dict-like object, peut être vide lors du premier chargement
+    session_id = cookie_manager.get('auth_session_id') if cookie_manager else None
 
     if session_id:
         # Tenter de restaurer la session depuis le cache
