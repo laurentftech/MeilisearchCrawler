@@ -185,7 +185,80 @@ This type is optimized for sites running on MediaWiki software (like Wikipedia, 
 - The `crawl` URL should be the base URL of the wiki (e.g., `https://fr.vikidia.org`).
 - `depth` and `selector` are not used for this type.
 
-## 5. Running Tests
+## 5. Dashboard Authentication
+
+The dashboard supports multiple authentication methods to secure access:
+
+- **Authentik (OpenID Connect)**: Enterprise SSO solution
+- **Google OAuth**: Sign in with Google accounts
+- **GitHub OAuth**: Sign in with GitHub accounts
+- **Simple Password**: Basic password authentication
+
+### Setting up OAuth Authentication
+
+To enable OAuth authentication, configure the following in your `.env` file:
+
+**For Google OAuth:**
+```bash
+GOOGLE_OAUTH_CLIENT_ID=your_client_id.apps.googleusercontent.com
+GOOGLE_OAUTH_CLIENT_SECRET=your_client_secret
+GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8501/
+ALLOWED_EMAILS=user1@gmail.com,user2@example.com
+```
+
+Get credentials from: https://console.cloud.google.com/apis/credentials
+
+**For GitHub OAuth:**
+```bash
+GITHUB_OAUTH_CLIENT_ID=your_github_client_id
+GITHUB_OAUTH_CLIENT_SECRET=your_github_client_secret
+GITHUB_OAUTH_REDIRECT_URI=http://localhost:8501/
+ALLOWED_EMAILS=user1@example.com,user2@company.com
+```
+
+Get credentials from: https://github.com/settings/developers
+
+### Email Whitelist
+
+The `ALLOWED_EMAILS` variable restricts access to specific email addresses:
+- If empty: all authenticated users can access (not recommended for production)
+- If set: only listed emails can access the dashboard
+
+### Diagnosing Authentication Issues
+
+If you're having trouble with OAuth login, use the diagnostic tools:
+
+**1. Check your configuration:**
+```bash
+python3 check_auth_config.py
+```
+
+This will show:
+- Which authentication providers are configured
+- Whether your credentials are set
+- If an email is allowed to access
+
+**2. Test a specific email:**
+```bash
+python3 check_auth_config.py user@example.com
+```
+
+**3. Monitor authentication logs:**
+```bash
+./watch_auth_logs.sh
+```
+
+Or view the logs directly:
+```bash
+tail -f data/logs/auth.log
+```
+
+The logs will show:
+- ✅ Successful logins with email addresses
+- ❌ Failed logins with detailed reasons (email not authorized, email missing, etc.)
+- 🔍 Full OAuth response details (in DEBUG mode)
+
+## 6. Running Tests
 
 To run the test suite, first install the development dependencies:
 

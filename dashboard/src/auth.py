@@ -17,7 +17,7 @@ from meilisearchcrawler.auth_config import get_auth_config, AuthProvider
 # Configuration du logging pour l'authentification
 os.makedirs("data/logs", exist_ok=True)
 auth_logger = logging.getLogger("auth")
-auth_logger.setLevel(logging.INFO)
+auth_logger.setLevel(logging.INFO)  # Niveau INFO pour les événements importants
 
 # Handler pour fichier
 if not auth_logger.handlers:
@@ -261,7 +261,54 @@ def _oauth_auth(provider: str, t):
 
     if result:
         user_info = result.get('user', {})
-        user_email = user_info.get('email', '')
+
+        # Essayer plusieurs façons de récupérer l'email
+        user_email = (
+            user_info.get('email') or
+            result.get('email') or
+            result.get('userinfo', {}).get('email') or
+            ''
+        )
+
+        # Si l'email est vide, essayer de le récupérer via l'API du provider
+        if not user_email and result.get('token'):
+            try:
+                if provider == "google":
+                    # Récupérer les infos via l'API Google
+                    response = requests.get(
+                        "https://www.googleapis.com/oauth2/v2/userinfo",
+                        headers={"Authorization": f"Bearer {result['token']['access_token']}"}
+                    )
+                    if response.status_code == 200:
+                        google_info = response.json()
+                        user_email = google_info.get('email', '')
+                        # Mettre à jour user_info avec toutes les données
+                        user_info.update(google_info)
+                elif provider == "github":
+                    # Récupérer les infos via l'API GitHub
+                    response = requests.get(
+                        "https://api.github.com/user",
+                        headers={"Authorization": f"token {result['token']['access_token']}"}
+                    )
+                    if response.status_code == 200:
+                        github_info = response.json()
+                        user_email = github_info.get('email', '')
+                        # Si l'email principal est privé, essayer de récupérer les emails publics
+                        if not user_email:
+                            emails_response = requests.get(
+                                "https://api.github.com/user/emails",
+                                headers={"Authorization": f"token {result['token']['access_token']}"}
+                            )
+                            if emails_response.status_code == 200:
+                                emails = emails_response.json()
+                                # Trouver l'email principal ou le premier vérifié
+                                for email_obj in emails:
+                                    if email_obj.get('primary') and email_obj.get('verified'):
+                                        user_email = email_obj.get('email', '')
+                                        break
+                        user_info.update(github_info)
+            except Exception as e:
+                auth_logger.error(f"Erreur lors de la récupération de l'email via API {provider}: {str(e)}")
 
         auth_logger.info(f"{provider.upper()} OAuth login attempt - email: {user_email}")
 

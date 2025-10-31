@@ -1,6 +1,35 @@
-@cha# Changelog
+# Changelog
 
 Toutes les modifications notables apportées à ce projet seront documentées dans ce fichier.
+
+## 2025-10-31
+
+### ✨ Fonctionnalités
+
+- **Système de Logging d'Authentification** : Ajout d'un système de logs complet pour l'authentification du dashboard (`data/logs/auth.log`). Tous les événements d'authentification sont maintenant enregistrés avec le niveau DEBUG pour faciliter le diagnostic.
+  - Enregistrement de toutes les tentatives de connexion (Google OAuth, GitHub OAuth, Authentik, Simple Password)
+  - Log de l'email récupéré depuis les providers OAuth
+  - Log des refus d'accès avec raison détaillée (email non autorisé, email vide, etc.)
+
+- **Script de Diagnostic d'Authentification** : Nouveau script `check_auth_config.py` pour vérifier la configuration OAuth et tester si un email est autorisé.
+  - Vérifie tous les providers configurés (Authentik, Google, GitHub, Simple Password)
+  - Affiche l'état de la variable `ALLOWED_EMAILS`
+  - Teste si un email spécifique est autorisé à accéder au dashboard
+  - Affiche les dernières lignes du fichier de logs d'authentification
+
+- **Script de Surveillance des Logs** : Nouveau script `watch_auth_logs.sh` pour surveiller les logs d'authentification en temps réel avec coloration syntaxique (rouge pour erreurs, vert pour succès, etc.).
+
+### 🐛 Corrections de bugs
+
+- **Récupération d'Email OAuth** : Correction d'un bug critique où l'email n'était pas récupéré depuis Google OAuth et GitHub OAuth via `streamlit-oauth`.
+  - Ajout d'un système de fallback qui interroge directement l'API Google (`https://www.googleapis.com/oauth2/v2/userinfo`) ou GitHub (`https://api.github.com/user`) si `streamlit-oauth` ne fournit pas l'email
+  - Pour GitHub, récupération automatique des emails privés via l'endpoint `/user/emails` si l'email principal n'est pas public
+  - Logs détaillés de toutes les réponses API pour faciliter le debugging
+
+### 📚 Documentation
+
+- **Guide de Diagnostic OAuth** : Documentation complète sur l'utilisation du système de logging pour diagnostiquer les problèmes d'authentification
+- **Instructions de Configuration OAuth** : Ajout d'instructions claires pour configurer `ALLOWED_EMAILS` et les credentials OAuth
 
 ## 2025-10-30
 

@@ -184,7 +184,80 @@ Ce type est optimisé pour les sites utilisant le logiciel MediaWiki (comme Wiki
 - L'URL `crawl` doit être l'URL de base du wiki (ex: `https://fr.vikidia.org`).
 - `depth` et `selector` ne sont pas utilisés pour ce type.
 
-## 5. Lancer les Tests
+## 5. Authentification du Dashboard
+
+Le dashboard supporte plusieurs méthodes d'authentification pour sécuriser l'accès :
+
+- **Authentik (OpenID Connect)**: Solution SSO d'entreprise
+- **Google OAuth**: Connexion avec comptes Google
+- **GitHub OAuth**: Connexion avec comptes GitHub
+- **Mot de passe simple**: Authentification basique par mot de passe
+
+### Configuration de l'authentification OAuth
+
+Pour activer l'authentification OAuth, configurez les variables suivantes dans votre fichier `.env` :
+
+**Pour Google OAuth :**
+```bash
+GOOGLE_OAUTH_CLIENT_ID=votre_client_id.apps.googleusercontent.com
+GOOGLE_OAUTH_CLIENT_SECRET=votre_client_secret
+GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8501/
+ALLOWED_EMAILS=utilisateur1@gmail.com,utilisateur2@exemple.com
+```
+
+Obtenez les credentials sur : https://console.cloud.google.com/apis/credentials
+
+**Pour GitHub OAuth :**
+```bash
+GITHUB_OAUTH_CLIENT_ID=votre_github_client_id
+GITHUB_OAUTH_CLIENT_SECRET=votre_github_client_secret
+GITHUB_OAUTH_REDIRECT_URI=http://localhost:8501/
+ALLOWED_EMAILS=utilisateur1@exemple.com,utilisateur2@societe.com
+```
+
+Obtenez les credentials sur : https://github.com/settings/developers
+
+### Liste d'emails autorisés
+
+La variable `ALLOWED_EMAILS` restreint l'accès à des adresses email spécifiques :
+- Si vide : tous les utilisateurs authentifiés peuvent accéder (non recommandé en production)
+- Si configurée : seuls les emails listés peuvent accéder au dashboard
+
+### Diagnostic des problèmes d'authentification
+
+Si vous rencontrez des difficultés avec la connexion OAuth, utilisez les outils de diagnostic :
+
+**1. Vérifier votre configuration :**
+```bash
+python3 check_auth_config.py
+```
+
+Cela affichera :
+- Quels providers d'authentification sont configurés
+- Si vos credentials sont définis
+- Si un email est autorisé à accéder
+
+**2. Tester un email spécifique :**
+```bash
+python3 check_auth_config.py utilisateur@exemple.com
+```
+
+**3. Surveiller les logs d'authentification :**
+```bash
+./watch_auth_logs.sh
+```
+
+Ou consulter les logs directement :
+```bash
+tail -f data/logs/auth.log
+```
+
+Les logs afficheront :
+- ✅ Connexions réussies avec les adresses email
+- ❌ Connexions échouées avec raisons détaillées (email non autorisé, email manquant, etc.)
+- 🔍 Détails complets de la réponse OAuth (en mode DEBUG)
+
+## 6. Lancer les Tests
 
 Pour exécuter la suite de tests, installez d'abord les dépendances de développement:
 
