@@ -12,6 +12,7 @@ from datetime import datetime
 from urllib.parse import urlencode, parse_qs, urlparse
 from typing import Optional, Dict, Any
 from dashboard.src.i18n import get_translator
+from dashboard.src.session_manager import get_session_manager
 from meilisearchcrawler.auth_config import get_auth_config, AuthProvider
 
 # Configuration du logging pour l'authentification
@@ -61,9 +62,22 @@ def _simple_auth(t):
         if submit:
             if password == dashboard_password:
                 auth_logger.info("Simple password login SUCCESS")
+
+                # Créer une session persistante
+                session_manager = get_session_manager()
+                user_info = {"name": "Dashboard User", "email": ""}
+                session_id = session_manager.create_session(
+                    email="",
+                    user_info=user_info,
+                    auth_method="password"
+                )
+
+                # Sauvegarder dans la session Streamlit
                 st.session_state.authenticated = True
                 st.session_state.auth_method = "password"
-                st.session_state.user_info = {"name": "Dashboard User", "email": ""}
+                st.session_state.user_info = user_info
+                st.session_state.persistent_session_id = session_id
+
                 st.rerun()
             else:
                 auth_logger.warning("Simple password login FAILED - incorrect password")
@@ -136,16 +150,29 @@ def _authentik_auth(t):
                         st.info(t('contact_admin'))
                         st.stop()
 
+                    # Préparer les informations utilisateur
+                    user_data = {
+                        "name": user_info.get("name", user_info.get("preferred_username", "User")),
+                        "email": user_email,
+                        "sub": user_info.get("sub", ""),
+                    }
+
+                    # Créer une session persistante
+                    session_manager = get_session_manager()
+                    session_id = session_manager.create_session(
+                        email=user_email,
+                        user_info=user_data,
+                        auth_method="authentik",
+                        token={"access_token": access_token, "id_token": id_token}
+                    )
+
                     # Sauvegarder dans la session
                     st.session_state.authenticated = True
                     st.session_state.auth_method = "authentik"
                     st.session_state.oauth_token = access_token
                     st.session_state.id_token = id_token
-                    st.session_state.user_info = {
-                        "name": user_info.get("name", user_info.get("preferred_username", "User")),
-                        "email": user_email,
-                        "sub": user_info.get("sub", ""),
-                    }
+                    st.session_state.user_info = user_data
+                    st.session_state.persistent_session_id = session_id
 
                     auth_logger.info(f"Authentik login SUCCESS - email: {user_email}")
 
@@ -239,6 +266,12 @@ def _oauth_auth(provider: str, t):
         st.info(t('oauth_config_help').format(provider=provider.upper()))
         return False
 
+    # Vérifier si on a déjà un token valide en session (persistance après rerun)
+    session_key = f"{provider}_oauth_result"
+    if session_key in st.session_state and st.session_state.get('authenticated'):
+        # Déjà authentifié, pas besoin de redemander
+        return True
+
     # Créer le composant d'authentification
     oauth2 = OAuth2Component(
         config["client_id"],
@@ -321,10 +354,26 @@ def _oauth_auth(provider: str, t):
             st.stop()
 
         auth_logger.info(f"{provider.upper()} OAuth login SUCCESS - email: {user_email}")
+
+        # Créer une session persistante
+        session_manager = get_session_manager()
+        session_id = session_manager.create_session(
+            email=user_email,
+            user_info=user_info,
+            auth_method=provider,
+            token=result.get('token')
+        )
+
+        # Sauvegarder les informations d'authentification dans la session
         st.session_state.authenticated = True
         st.session_state.auth_method = provider
         st.session_state.oauth_token = result.get('token')
         st.session_state.user_info = user_info
+        st.session_state.persistent_session_id = session_id
+
+        # Sauvegarder le résultat OAuth complet pour persistance
+        st.session_state[f"{provider}_oauth_result"] = result
+
         st.rerun()
 
     return False
@@ -346,7 +395,23 @@ def check_authentication():
     lang = st.session_state.get('lang', 'fr')
     t = get_translator(lang)
 
-    # Vérifier si déjà authentifié
+    # Récupérer le gestionnaire de sessions
+    session_manager = get_session_manager()
+
+    # Vérifier si on a un session_id valide dans le cache persistant
+    if 'persistent_session_id' in st.session_state:
+        session_id = st.session_state['persistent_session_id']
+        session_data = session_manager.get_session(session_id)
+
+        if session_data:
+            # Restaurer l'authentification depuis la session persistante
+            st.session_state.authenticated = True
+            st.session_state.auth_method = session_data['auth_method']
+            st.session_state.user_info = session_data['user_info']
+            st.session_state.oauth_token = session_data.get('token')
+            return session_data['user_info']
+
+    # Vérifier si déjà authentifié dans la session Streamlit courante
     if st.session_state.get('authenticated', False):
         return st.session_state.get('user_info', {})
 
@@ -458,11 +523,21 @@ def check_authentication():
 
 def logout():
     """Déconnecte l'utilisateur."""
+    # Supprimer la session persistante
+    if 'persistent_session_id' in st.session_state:
+        session_manager = get_session_manager()
+        session_manager.delete_session(st.session_state['persistent_session_id'])
+
     # Nettoyer toutes les variables de session liées à l'authentification
-    keys_to_remove = ['authenticated', 'auth_method', 'oauth_token', 'user_info', 'selected_auth_method', 'id_token', 'redirect_uri']
+    keys_to_remove = ['authenticated', 'auth_method', 'oauth_token', 'user_info', 'selected_auth_method', 'id_token', 'redirect_uri', 'persistent_session_id']
     for key in keys_to_remove:
         if key in st.session_state:
             del st.session_state[key]
+
+    # Nettoyer les résultats OAuth stockés
+    keys_to_clean = [k for k in st.session_state.keys() if k.endswith('_oauth_result')]
+    for key in keys_to_clean:
+        del st.session_state[key]
 
     st.rerun()
 
