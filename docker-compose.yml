@@ -65,18 +65,53 @@ services:
       - 1.0.0.3
     extra_hosts:
       - "${AUTHENTIK_HOST_ENTRY}"
+      - "${KIDSEARCH_API_HOST_ENTRY}"
     environment:
       SERVICE: all
       LOG_LEVEL: ${LOG_LEVEL:-info}  # Use info by default, not debug
       API_ENABLED: "true"
       API_WORKERS: ${API_WORKERS:-2}
 
-      # --- Authentication ---
-      OAUTH_AUTHORIZE_URL: ${OAUTH_AUTHORIZE_URL:-}
-      OAUTH_TOKEN_URL: ${OAUTH_TOKEN_URL:-}
-      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:-}
-      OAUTH_CLIENT_SECRET: ${OAUTH_CLIENT_SECRET:-}
-      OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:-http://localhost:8501}
+      # --- Authentication Configuration ---
+      # Disable auth entirely (optional)
+      AUTH_DISABLED: ${AUTH_DISABLED:-false}
+
+      # Configure which auth providers to enable (comma-separated: authentik,google,github,simple)
+      AUTH_PROVIDERS: ${AUTH_PROVIDERS:-}
+
+      # Authentik (OpenID Connect)
+      AUTHENTIK_DOMAIN: ${AUTHENTIK_DOMAIN:-}
+      AUTHENTIK_CLIENT_ID: ${AUTHENTIK_CLIENT_ID:-}
+      AUTHENTIK_CLIENT_SECRET: ${AUTHENTIK_CLIENT_SECRET:-}
+      AUTHENTIK_APP_SLUG: ${AUTHENTIK_APP_SLUG:-kidsearch}
+      AUTHENTIK_SCOPES: ${AUTHENTIK_SCOPES:-openid profile email}
+      AUTHENTIK_REDIRECT_URI: ${AUTHENTIK_REDIRECT_URI:-http://localhost:8501/}
+      AUTHENTIK_API_REDIRECT_URI: ${AUTHENTIK_API_REDIRECT_URI:-http://localhost:8082/api/auth/callback}
+
+      # Simple password auth
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+
+      # Authorized users
+      ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
+
+      # Google OAuth
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:8501/}
+      GOOGLE_OAUTH_AUTHORIZE_URL: ${GOOGLE_OAUTH_AUTHORIZE_URL:-https://accounts.google.com/o/oauth2/v2/auth}
+      GOOGLE_OAUTH_TOKEN_URL: ${GOOGLE_OAUTH_TOKEN_URL:-https://oauth2.googleapis.com/token}
+
+      # GitHub OAuth
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+      GITHUB_OAUTH_REDIRECT_URI: ${GITHUB_OAUTH_REDIRECT_URI:-http://localhost:8501/}
+      GITHUB_OAUTH_AUTHORIZE_URL: ${GITHUB_OAUTH_AUTHORIZE_URL:-https://github.com/login/oauth/authorize}
+      GITHUB_OAUTH_TOKEN_URL: ${GITHUB_OAUTH_TOKEN_URL:-https://github.com/login/oauth/access_token}
+
+      # JWT Configuration (for API)
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_EXPIRATION_MINUTES: ${JWT_EXPIRATION_MINUTES:-1440}
 
       # Frontend URL of Google CSE
       FRONTEND_URL: ${FRONTEND_URL:-}

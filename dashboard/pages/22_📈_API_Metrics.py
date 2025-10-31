@@ -19,13 +19,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 # =======================
 #  Vérification de l'accès
 # =======================
-from dashboard.src.auth import check_authentication
+from dashboard.src.auth import check_authentication, show_user_widget
 check_authentication()
 
 # Initialize translator
 if 'lang' not in st.session_state:
     st.session_state.lang = "fr"
 t = get_translator(st.session_state.lang)
+
+# Afficher le widget utilisateur avec bouton de déconnexion
+show_user_widget(t)
 
 st.set_page_config(
     page_title=t("api_metrics.title"),
@@ -44,7 +47,7 @@ def fetch_metrics():
     """Fetch metrics from the API endpoint."""
     try:
         headers = {'Cache-Control': 'no-cache', 'Pragma': 'no-cache'}
-        response = requests.get(METRICS_ENDPOINT, timeout=5, headers=headers)
+        response = requests.get(METRICS_ENDPOINT, timeout=15, headers=headers)
         response.raise_for_status()
         return response.text
     except requests.exceptions.RequestException as e:
@@ -56,7 +59,7 @@ def reset_metrics():
     """Reset all API metrics."""
     try:
         reset_endpoint = f"{API_URL}/api/metrics/reset"
-        response = requests.post(reset_endpoint, timeout=5)
+        response = requests.post(reset_endpoint, timeout=15)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:

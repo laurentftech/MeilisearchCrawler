@@ -39,15 +39,11 @@ t = get_translator(st.session_state.lang)
 # =======================
 #  Vérification de l'accès
 # =======================
-from dashboard.src.auth import check_authentication
+from dashboard.src.auth import check_authentication, show_user_widget
 token_info = check_authentication()
 
-# Si on arrive ici, l'utilisateur est authentifié.
-# On peut éventuellement utiliser les infos du token plus tard.
-# Par exemple, pour afficher le nom de l'utilisateur :
-# from jwt import decode
-# user_info = decode(token_info['id_token'], options={"verify_signature": False}) 
-# st.sidebar.success(f"Connecté en tant que {user_info.get('name')}")
+# Afficher le widget utilisateur avec bouton de déconnexion
+show_user_widget(t)
 
 
 # Import services after auth check

@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 # =======================
 #  Vérification de l'accès
 # =======================
-from dashboard.src.auth import check_authentication
+from dashboard.src.auth import check_authentication, show_user_widget
 check_authentication()
 
 # Corrected imports for the new SDK and proper pathing
@@ -24,6 +24,9 @@ from dashboard.src.i18n import get_translator
 if 'lang' not in st.session_state:
     st.session_state.lang = "fr"
 t = get_translator(st.session_state.lang)
+
+# Afficher le widget utilisateur avec bouton de déconnexion
+show_user_widget(t)
 
 st.set_page_config(
     page_title=t("search.page_title"),

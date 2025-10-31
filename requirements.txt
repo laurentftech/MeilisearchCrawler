@@ -8,6 +8,8 @@ uvicorn[standard]>=0.27.0
 pydantic>=2.6.0
 python-dotenv
 requests
+httpx  # For async HTTP requests
+PyJWT  # For JWT token handling
 meilisearch-python-sdk>=4.10.0
 numpy==1.26.4
 prometheus-fastapi-instrumentator

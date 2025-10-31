@@ -16,13 +16,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 # =======================
 #  Vérification de l'accès
 # =======================
-from dashboard.src.auth import check_authentication
+from dashboard.src.auth import check_authentication, show_user_widget
 check_authentication()
 
 # Initialize translator
 if 'lang' not in st.session_state:
     st.session_state.lang = "fr"
 t = get_translator(st.session_state.lang)
+
+# Afficher le widget utilisateur avec bouton de déconnexion
+show_user_widget(t)
 
 st.set_page_config(page_title="Meilisearch Server", page_icon="☁️", layout="wide")
 
@@ -203,8 +206,8 @@ with tab2:
                             "Authorization": f"Bearer {MEILI_KEY}",
                             "Content-Type": "application/json"
                         }
-                        # Try both 'multimodal' (newer) and 'vectorStore' (older) for compatibility
-                        payload = {"multimodal": True, "vectorStore": True}
+                        # Enable multimodal and vectorStoreSetting for vector search support
+                        payload = {"multimodal": True, "vectorStoreSetting": True}
                         r = requests.patch(f"{MEILI_URL}/experimental-features", json=payload, headers=headers)
                         r.raise_for_status()
                         st.success("✅ Multimodal feature enabled.")

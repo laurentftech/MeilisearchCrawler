@@ -14,8 +14,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 # =======================
 #  Vérification de l'accès
 # =======================
-from dashboard.src.auth import check_authentication
+from dashboard.src.auth import check_authentication, show_user_widget
+from dashboard.src.i18n import get_translator
+
 check_authentication()
+
+# Initialize translator
+if 'lang' not in st.session_state:
+    st.session_state.lang = "fr"
+t = get_translator(st.session_state.lang)
+
+# Afficher le widget utilisateur avec bouton de déconnexion
+show_user_widget(t)
 
 # API Configuration
 API_DISPLAY_HOST = os.getenv("API_DISPLAY_HOST") or os.getenv("API_HOST", "localhost")

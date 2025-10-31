@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Gauge
 
-from .routes import health, search, metrics
+from .routes import health, search, metrics, auth
 from .services.meilisearch_client import MeilisearchClient
 from .services.cse_client import CSEClient
 from .services.wiki_client import WikiClient
@@ -156,6 +156,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router, prefix="/api", tags=["Health"])
     app.include_router(search.router, prefix="/api", tags=["Search"])
     app.include_router(metrics.router, prefix="/api", tags=["Metrics"])
+    app.include_router(auth.router, prefix="/api", tags=["Authentication"])
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request, exc):
