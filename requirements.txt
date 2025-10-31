@@ -29,6 +29,7 @@ streamlit
 pandas
 plotly
 streamlit-oauth
+extra-streamlit-components
 
 # --- Embeddings ---
 # Provider for Google Gemini embeddings (optional)

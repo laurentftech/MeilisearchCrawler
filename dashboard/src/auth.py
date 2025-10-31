@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any
 from dashboard.src.i18n import get_translator
 from dashboard.src.session_manager import get_session_manager
 from meilisearchcrawler.auth_config import get_auth_config, AuthProvider
+import extra_streamlit_components as stx
 
 # Configuration du logging pour l'authentification
 os.makedirs("data/logs", exist_ok=True)
@@ -27,6 +28,12 @@ if not auth_logger.handlers:
         logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     )
     auth_logger.addHandler(file_handler)
+
+
+@st.cache_resource
+def get_cookie_manager():
+    """Retourne le gestionnaire de cookies (cache persistant)."""
+    return stx.CookieManager()
 
 
 def _hash_password(password: str) -> str:
@@ -77,6 +84,10 @@ def _simple_auth(t):
                 st.session_state.auth_method = "password"
                 st.session_state.user_info = user_info
                 st.session_state.persistent_session_id = session_id
+
+                # Sauvegarder le session_id dans un cookie (24h)
+                cookie_manager = get_cookie_manager()
+                cookie_manager.set('auth_session_id', session_id, max_age=86400)  # 24 heures
 
                 st.rerun()
             else:
@@ -173,6 +184,10 @@ def _authentik_auth(t):
                     st.session_state.id_token = id_token
                     st.session_state.user_info = user_data
                     st.session_state.persistent_session_id = session_id
+
+                    # Sauvegarder le session_id dans un cookie (24h)
+                    cookie_manager = get_cookie_manager()
+                    cookie_manager.set('auth_session_id', session_id, max_age=86400)  # 24 heures
 
                     auth_logger.info(f"Authentik login SUCCESS - email: {user_email}")
 
@@ -371,6 +386,10 @@ def _oauth_auth(provider: str, t):
         st.session_state.user_info = user_info
         st.session_state.persistent_session_id = session_id
 
+        # Sauvegarder le session_id dans un cookie (24h)
+        cookie_manager = get_cookie_manager()
+        cookie_manager.set('auth_session_id', session_id, max_age=86400)  # 24 heures
+
         # Sauvegarder le résultat OAuth complet pour persistance
         st.session_state[f"{provider}_oauth_result"] = result
 
@@ -395,12 +414,18 @@ def check_authentication():
     lang = st.session_state.get('lang', 'fr')
     t = get_translator(lang)
 
-    # Récupérer le gestionnaire de sessions
+    # Récupérer le gestionnaire de sessions et de cookies
     session_manager = get_session_manager()
+    cookie_manager = get_cookie_manager()
 
-    # Vérifier si on a un session_id valide dans le cache persistant
-    if 'persistent_session_id' in st.session_state:
-        session_id = st.session_state['persistent_session_id']
+    # Vérifier si on a un session_id dans les cookies du navigateur
+    if not cookie_manager.ready:
+        st.stop()  # Attendre que le cookie manager soit prêt
+
+    session_id = cookie_manager.get('auth_session_id')
+
+    if session_id:
+        # Tenter de restaurer la session depuis le cache
         session_data = session_manager.get_session(session_id)
 
         if session_data:
@@ -409,7 +434,11 @@ def check_authentication():
             st.session_state.auth_method = session_data['auth_method']
             st.session_state.user_info = session_data['user_info']
             st.session_state.oauth_token = session_data.get('token')
+            st.session_state.persistent_session_id = session_id
             return session_data['user_info']
+        else:
+            # Session expirée, supprimer le cookie
+            cookie_manager.delete('auth_session_id')
 
     # Vérifier si déjà authentifié dans la session Streamlit courante
     if st.session_state.get('authenticated', False):
@@ -523,6 +552,10 @@ def check_authentication():
 
 def logout():
     """Déconnecte l'utilisateur."""
+    # Supprimer le cookie d'authentification
+    cookie_manager = get_cookie_manager()
+    cookie_manager.delete('auth_session_id')
+
     # Supprimer la session persistante
     if 'persistent_session_id' in st.session_state:
         session_manager = get_session_manager()
