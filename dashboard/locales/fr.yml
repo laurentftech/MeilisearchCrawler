@@ -363,3 +363,6 @@ api_metrics:
 auth_required: "Authentification Requise"
 password_label: "Mot de passe"
 incorrect_password: "Mot de passe incorrect. Veuillez réessayer."
+login_with_sso: "Se connecter avec le SSO"
+please_log_in: "Veuillez vous connecter pour accéder au dashboard."
+oauth_config_error: "[Erreur] La configuration OAuth2 est manquante. L'administrateur doit définir les variables d'environnement OAUTH_*."
