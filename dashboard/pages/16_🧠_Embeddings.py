@@ -1,4 +1,6 @@
 import streamlit as st
+import sys
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -9,6 +11,15 @@ from dashboard.src.i18n import get_translator
 from dashboard.src.meilisearch_client import get_meili_client
 from dashboard.src.config import INDEX_NAME, BASE_DIR
 from meilisearch_python_sdk.errors import MeilisearchApiError
+
+# This is a hack to make sure the app is launched from the root of the project
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+# =======================
+#  Vérification de l'accès
+# =======================
+from dashboard.src.auth import check_authentication
+check_authentication()
 
 # Initialiser le traducteur
 if 'lang' not in st.session_state:

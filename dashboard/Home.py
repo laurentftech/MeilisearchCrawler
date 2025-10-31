@@ -1,6 +1,5 @@
 import streamlit as st
 import os
-import hmac  # Pour la comparaison sécurisée de mots de passe
 from dotenv import load_dotenv
 import sys
 from pathlib import Path
@@ -37,63 +36,25 @@ if 'lang' not in st.session_state:
 from dashboard.src.i18n import get_translator
 t = get_translator(st.session_state.lang)
 
-# Import services after sys.path is set and translator is available
+# =======================
+#  Vérification de l'accès
+# =======================
+from dashboard.src.auth import check_authentication
+token_info = check_authentication()
+
+# Si on arrive ici, l'utilisateur est authentifié.
+# On peut éventuellement utiliser les infos du token plus tard.
+# Par exemple, pour afficher le nom de l'utilisateur :
+# from jwt import decode
+# user_info = decode(token_info['id_token'], options={"verify_signature": False}) 
+# st.sidebar.success(f"Connecté en tant que {user_info.get('name')}")
+
+
+# Import services after auth check
 from dashboard.src.state import is_crawler_running
 from dashboard.src.utils import load_cache_stats
 from dashboard.src.meilisearch_client import get_meili_client
 from meilisearchcrawler.config import INDEX_NAME
-
-# =======================
-#  Portail d'Authentification
-# =======================
-
-def check_password():
-    """Retourne `True` si l'utilisateur a entré le bon mot de passe."""
-
-    def password_entered():
-        """Vérifie si le mot de passe entré par l'utilisateur est correct."""
-        try:
-            # Comparaison sécurisée pour éviter les attaques temporelles
-            password_correct = hmac.compare_digest(
-                st.session_state["password"], os.getenv("DASHBOARD_PASSWORD")
-            )
-        except (KeyError, AttributeError):
-            password_correct = False
-
-        st.session_state["password_correct"] = password_correct
-        if password_correct:
-            del st.session_state["password"]  # Supprimer le mdp de la session
-
-    if st.session_state.get("password_correct", False):
-        return True
-
-    # Afficher le formulaire de connexion
-    st.title(f"🔒 {t('auth_required')}")
-    st.text_input(
-        t('password_label'), type="password", on_change=password_entered, key="password"
-    )
-    if "password_correct" in st.session_state and not st.session_state.password_correct:
-        st.error(f"😕 {t('incorrect_password')}")
-    return False
-
-def run_security_check():
-    """
-    Exécute la vérification de sécurité.
-    Retourne `False` si l'accès doit être bloqué, `True` sinon.
-    """
-    # Si DASHBOARD_PASSWORD est défini dans les variables d'environnement, on active la protection.
-    dashboard_password = os.getenv("DASHBOARD_PASSWORD")
-    if dashboard_password:
-        return check_password()
-
-    # Sinon, l'accès est libre.
-    return True
-
-# =======================
-#  Vérification de l'accès
-# =======================
-if not run_security_check():
-    st.stop()  # Arrête l'exécution si l'authentification échoue
 
 
 # =======================

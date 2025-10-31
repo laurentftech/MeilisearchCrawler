@@ -3,6 +3,8 @@ Streamlit dashboard page to display API metrics from the Prometheus endpoint.
 """
 
 import streamlit as st
+import sys
+from pathlib import Path
 import requests
 from prometheus_client.parser import text_string_to_metric_families
 import pandas as pd
@@ -10,6 +12,15 @@ import plotly.graph_objects as go
 import plotly.express as px
 
 from dashboard.src.i18n import get_translator
+
+# This is a hack to make sure the app is launched from the root of the project
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+# =======================
+#  Vérification de l'accès
+# =======================
+from dashboard.src.auth import check_authentication
+check_authentication()
 
 # Initialize translator
 if 'lang' not in st.session_state:

@@ -3,7 +3,19 @@ Visual separator between Crawler and API sections
 """
 
 import streamlit as st
+import sys
+from pathlib import Path
 import os
+
+
+# This is a hack to make sure the app is launched from the root of the project
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+# =======================
+#  Vérification de l'accès
+# =======================
+from dashboard.src.auth import check_authentication
+check_authentication()
 
 # API Configuration
 API_DISPLAY_HOST = os.getenv("API_DISPLAY_HOST") or os.getenv("API_HOST", "localhost")

@@ -26,6 +26,7 @@ psutil
 streamlit
 pandas
 plotly
+streamlit-oauth
 
 # --- Embeddings ---
 # Provider for Google Gemini embeddings (optional)

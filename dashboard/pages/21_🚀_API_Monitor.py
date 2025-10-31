@@ -4,6 +4,8 @@ Displays real-time statistics and health of the KidSearch API backend
 """
 
 import streamlit as st
+import sys
+from pathlib import Path
 import pandas as pd
 import plotly.express as px
 import time
@@ -13,6 +15,15 @@ import requests
 # Use absolute imports from the project root
 from dashboard.src.i18n import get_translator
 from dashboard.src.meilisearch_client import get_meili_client
+
+# This is a hack to make sure the app is launched from the root of the project
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+# =======================
+#  Vérification de l'accès
+# =======================
+from dashboard.src.auth import check_authentication
+check_authentication()
 
 INDEX_NAME = os.getenv("INDEX_NAME", "kidsearch")
 

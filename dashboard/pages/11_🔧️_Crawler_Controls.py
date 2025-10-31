@@ -1,4 +1,6 @@
 import streamlit as st
+import sys
+from pathlib import Path
 import time
 import subprocess
 import sys
@@ -9,6 +11,15 @@ from dashboard.src.state import start_crawler, stop_crawler, clear_cache, is_cra
 from dashboard.src.utils import load_sites_config, load_cache_stats, parse_logs_for_errors, get_meili_client
 from dashboard.src.config import CRAWLER_SCRIPT, INDEX_NAME
 from dashboard.src.i18n import get_translator
+
+# This is a hack to make sure the app is launched from the root of the project
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+# =======================
+#  Vérification de l'accès
+# =======================
+from dashboard.src.auth import check_authentication
+check_authentication()
 
 # Initialiser le traducteur
 if 'lang' not in st.session_state:
