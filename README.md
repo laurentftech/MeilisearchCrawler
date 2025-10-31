@@ -97,6 +97,8 @@ This crawler needs a Meilisearch instance to send its data to. The easiest way t
 
 The project can be run in different modes: crawler, API server, or dashboard.
 
+> 📖 **Complete API documentation available here:** [API_README.md](API_README.md)
+
 ### Crawler (Command-Line)
 
 Run the `crawler.py` script to start indexing content.

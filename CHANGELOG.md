@@ -1,4 +1,4 @@
-# Changelog
+@cha# Changelog
 
 Toutes les modifications notables apportées à ce projet seront documentées dans ce fichier.
 
@@ -8,15 +8,24 @@ Toutes les modifications notables apportées à ce projet seront documentées da
 
 - **Support Multilingue WikiClient** : Le client MediaWiki détecte automatiquement la langue depuis l'URL de l'API (en.wikipedia.org, fr.wikipedia.org, etc.) et adapte les headers HTTP (`Accept-Language`) en conséquence.
 - **Multi-Wiki Support** : L'API supporte maintenant plusieurs instances MediaWiki simultanément (Wikipedia EN, FR, Vikidia, etc.) via des variables d'environnement `WIKI_2_*`, `WIKI_3_*`, etc.
+- **Endpoint Reset Metrics** : Nouvel endpoint `POST /api/metrics/reset` pour réinitialiser toutes les statistiques API et métriques Prometheus via l'API.
+- **Dashboard API Metrics** : Ajout d'un bouton "🗑️ Réinitialiser les métriques" dans le dashboard pour effacer toutes les statistiques d'utilisation.
+- **Cloudflare Bypass** : Support de `curl-cffi` pour contourner la protection Cloudflare sur les sites Vikidia. Le WikiClient détecte automatiquement quand utiliser curl-cffi (sites Vikidia) vs aiohttp (Wikipedia).
 
 ### 🚀 Performance
 
 - **Compression GZIP** : Ajout du header `Accept-Encoding: gzip, deflate` pour les requêtes vers Google CSE et MediaWiki, réduisant significativement l'utilisation de la bande passante et améliorant les temps de réponse.
+- **Optimisation API** : Les embeddings (vecteurs de 384 dimensions) ne sont plus inclus dans les réponses de l'endpoint `/api/search`, réduisant la taille des réponses de ~90% (de ~150 KB à ~15 KB pour 20 résultats). Les embeddings servaient uniquement au calcul de similarité côté serveur et n'avaient aucune utilité côté client.
 
 ### 🐛 Corrections de bugs
 
 - **Dashboard Meilisearch Server** : Correction de l'erreur lors de la suppression d'index (`'Client' object has no attribute 'delete_index'`). La méthode correcte `index.delete()` est maintenant utilisée.
 - **Dashboard Embeddings** : Amélioration de la gestion d'erreur pour les versions récentes de Meilisearch où la fonctionnalité `multimodal` est activée par défaut. Ajout d'une méthode de fallback pour compter les documents avec/sans embeddings.
+- **Métriques Crawler** : Correction du chemin vers `status.json` dans `crawler_status.py`. Le fichier était lu à la racine du projet au lieu de `data/status.json`, causant l'affichage de métriques à 0 dans le dashboard.
+- **Détection Embeddings** : Ajout de `_vectors.default` aux attributs filtrables de Meilisearch. Sans cela, les filtres `_vectors.default EXISTS` et `NOT EXISTS` échouaient, empêchant la détection des documents avec embeddings dans le dashboard.
+- **WikiClient Validation** : Correction d'un bug critique dans `wiki_client.py` ligne 133 où la validation JSON vérifiait `'search' not in data` au lieu de `'search' not in data['query']`. Ce bug causait le rejet de toutes les réponses valides de l'API MediaWiki, résultant en 0 résultats wiki.
+- **Configuration Wiki** : Nettoyage automatique des guillemets dans les valeurs de configuration des wikis (ex: `WIKI_2_SITE_NAME`), permettant de copier-coller des valeurs avec guillemets depuis `.env` sans erreur.
+- **Déduplication Wiki** : Ajout d'une déduplication des résultats wiki par ID dans `search.py`. Lorsque plusieurs instances MediaWiki sont configurées, les doublons sont maintenant éliminés avant fusion avec les autres sources, évitant d'afficher plusieurs fois le même article.
 
 ## 2025-10-29
 

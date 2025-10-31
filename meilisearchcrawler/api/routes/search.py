@@ -140,7 +140,16 @@ async def search(
     meili_res = safety_filter.filter_results(meili_res)
     cse_res = safety_filter.filter_results(cse_res)
     wiki_res = safety_filter.filter_results(wiki_res)
-    merged_results = wiki_res + merger.merge(meilisearch_results=meili_res, cse_results=cse_res, limit=limit * 2)
+
+    # Deduplicate wiki results by ID to avoid duplicates from multiple wikis
+    seen_ids = set()
+    deduped_wiki_res = []
+    for r in wiki_res:
+        if r.id not in seen_ids:
+            deduped_wiki_res.append(r)
+            seen_ids.add(r.id)
+
+    merged_results = deduped_wiki_res + merger.merge(meilisearch_results=meili_res, cse_results=cse_res, limit=limit * 2)
 
     reranking_applied, reranking_time_ms = False, None
     if use_reranking and RERANKING_ENABLED and reranker and query_embedding is not None:
@@ -150,6 +159,11 @@ async def search(
         reranking_applied = True
 
     final_results = merged_results[:limit]
+
+    # Remove embeddings from results before sending to client (waste of bandwidth)
+    for result in final_results:
+        result.vectors = None
+
     total_time_ms = (time.time() - start_time) * 1000
 
     stats = SearchStats(

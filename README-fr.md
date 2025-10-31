@@ -97,6 +97,8 @@ Ce crawler a besoin d'une instance Meilisearch pour y envoyer ses données. La m
 
 Le projet peut être exécuté selon différents modes : crawler, serveur API ou tableau de bord.
 
+> 📖 **Documentation complète de l'API disponible ici :** [API_README_FR.md](API_README_FR.md)
+
 ### Crawler (Ligne de Commande)
 
 Exécutez le script `crawler.py` pour démarrer l'indexation du contenu.
