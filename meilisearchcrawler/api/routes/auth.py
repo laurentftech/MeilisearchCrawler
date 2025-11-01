@@ -1,6 +1,6 @@
 """
 Routes d'authentification pour l'API FastAPI.
-Gère le login via Authentik et la génération de JWT.
+Gère le login via OIDC et la génération de JWT.
 """
 
 import logging
@@ -12,7 +12,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from pydantic import BaseModel
 
 from meilisearchcrawler.auth_config import get_auth_config, AuthProvider
-from ..auth import jwt_handler, authentik_client
+from ..auth import jwt_handler, oidc_client
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +37,13 @@ class UserInfoResponse(BaseModel):
 @router.get("/auth/login")
 async def login(redirect_uri: Optional[str] = Query(None, description="Optional redirect URI after login")):
     """
-    Initie le flux d'authentification Authentik.
+    Initie le flux d'authentification OIDC.
 
     Args:
         redirect_uri: URI de redirection après l'authentification (optionnel)
 
     Returns:
-        Redirection vers Authentik pour l'authentification
+        Redirection vers le provider OIDC pour l'authentification
     """
     auth_config = get_auth_config()
 
@@ -51,14 +51,14 @@ async def login(redirect_uri: Optional[str] = Query(None, description="Optional 
     if not auth_config.is_enabled:
         raise HTTPException(status_code=400, detail="Authentication is disabled")
 
-    # Vérifier si Authentik est configuré
-    if not auth_config.has_provider(AuthProvider.AUTHENTIK):
-        raise HTTPException(status_code=400, detail="Authentik authentication is not configured")
+    # Vérifier si OIDC est configuré
+    if not auth_config.has_provider(AuthProvider.OIDC):
+        raise HTTPException(status_code=400, detail="OIDC authentication is not configured")
 
-    config = auth_config.get_authentik_config()
+    config = auth_config.get_oidc_config()
 
     # URI de callback
-    callback_uri = redirect_uri or os.getenv("AUTHENTIK_API_REDIRECT_URI", "http://localhost:8080/api/auth/callback")
+    callback_uri = redirect_uri or os.getenv("OIDC_API_REDIRECT_URI", "http://localhost:8080/api/auth/callback")
 
     # Construire l'URL d'autorisation
     auth_params = {
@@ -75,15 +75,15 @@ async def login(redirect_uri: Optional[str] = Query(None, description="Optional 
 
 @router.get("/auth/callback")
 async def callback(
-    code: str = Query(..., description="Authorization code from Authentik"),
+    code: str = Query(..., description="Authorization code from OIDC provider"),
     redirect_uri: Optional[str] = Query(None, description="Optional redirect URI")
 ):
     """
-    Callback OAuth2 depuis Authentik.
+    Callback OAuth2 depuis le provider OIDC.
     Échange le code contre un access token et génère un JWT.
 
     Args:
-        code: Code d'autorisation depuis Authentik
+        code: Code d'autorisation depuis le provider OIDC
         redirect_uri: URI de redirection (optionnel)
 
     Returns:
@@ -91,14 +91,14 @@ async def callback(
     """
     auth_config = get_auth_config()
 
-    if not auth_config.has_provider(AuthProvider.AUTHENTIK):
-        raise HTTPException(status_code=400, detail="Authentik authentication is not configured")
+    if not auth_config.has_provider(AuthProvider.OIDC):
+        raise HTTPException(status_code=400, detail="OIDC authentication is not configured")
 
     # URI de callback utilisée pour l'échange de code
-    callback_uri = redirect_uri or os.getenv("AUTHENTIK_API_REDIRECT_URI", "http://localhost:8080/api/auth/callback")
+    callback_uri = redirect_uri or os.getenv("OIDC_API_REDIRECT_URI", "http://localhost:8080/api/auth/callback")
 
     # Échanger le code contre un access token
-    token_data = await authentik_client.exchange_code_for_token(code, callback_uri)
+    token_data = await oidc_client.exchange_code_for_token(code, callback_uri)
 
     if not token_data:
         raise HTTPException(status_code=400, detail="Failed to exchange code for token")
@@ -106,7 +106,7 @@ async def callback(
     access_token = token_data.get("access_token")
 
     # Récupérer les informations utilisateur
-    user_info = await authentik_client.get_user_info(access_token)
+    user_info = await oidc_client.get_user_info(access_token)
 
     if not user_info:
         raise HTTPException(status_code=400, detail="Failed to fetch user info")
@@ -116,7 +116,7 @@ async def callback(
         "sub": user_info.get("sub"),
         "name": user_info.get("name", user_info.get("preferred_username", "User")),
         "email": user_info.get("email", ""),
-        "auth_method": "authentik",
+        "auth_method": "oidc",
     }
 
     jwt_token = jwt_handler.create_access_token(jwt_data)

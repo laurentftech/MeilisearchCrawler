@@ -1,6 +1,6 @@
 """
 Module d'authentification pour l'API FastAPI.
-Supporte Authentik (OpenID Connect) et génération de JWT.
+Supporte OpenID Connect (OIDC) et génération de JWT.
 """
 
 import os
@@ -80,12 +80,12 @@ class JWTHandler:
             return None
 
 
-class AuthentikClient:
-    """Client pour l'authentification Authentik."""
+class OIDCClient:
+    """Client pour l'authentification OpenID Connect (OIDC)."""
 
     def __init__(self):
         self.auth_config = get_auth_config()
-        self.config = self.auth_config.get_authentik_config()
+        self.config = self.auth_config.get_oidc_config()
 
     async def exchange_code_for_token(self, code: str, redirect_uri: str) -> Optional[Dict[str, Any]]:
         """
@@ -99,7 +99,7 @@ class AuthentikClient:
             Données du token (access_token, id_token, etc.) ou None en cas d'erreur
         """
         if not self.config:
-            logger.error("Authentik is not configured")
+            logger.error("OIDC is not configured")
             return None
 
         async with httpx.AsyncClient() as client:
@@ -128,7 +128,7 @@ class AuthentikClient:
 
     async def get_user_info(self, access_token: str) -> Optional[Dict[str, Any]]:
         """
-        Récupère les informations utilisateur depuis Authentik.
+        Récupère les informations utilisateur depuis le provider OIDC.
 
         Args:
             access_token: Access token
@@ -137,7 +137,7 @@ class AuthentikClient:
             Informations utilisateur ou None en cas d'erreur
         """
         if not self.config:
-            logger.error("Authentik is not configured")
+            logger.error("OIDC is not configured")
             return None
 
         async with httpx.AsyncClient() as client:
@@ -173,7 +173,7 @@ class AuthentikClient:
 
 # Instances globales
 jwt_handler = JWTHandler()
-authentik_client = AuthentikClient()
+oidc_client = OIDCClient()
 
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
