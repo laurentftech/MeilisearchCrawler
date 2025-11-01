@@ -29,7 +29,7 @@ streamlit
 pandas
 plotly
 streamlit-oauth
-extra-streamlit-components
+streamlit-local-storage  # For persistent authentication sessions
 
 # --- Embeddings ---
 # Provider for Google Gemini embeddings (optional)

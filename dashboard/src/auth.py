@@ -14,7 +14,7 @@ from typing import Optional, Dict, Any
 from dashboard.src.i18n import get_translator
 from dashboard.src.session_manager import get_session_manager
 from meilisearchcrawler.auth_config import get_auth_config, AuthProvider
-import extra_streamlit_components as stx
+from streamlit_local_storage import LocalStorage
 
 # Configuration du logging pour l'authentification
 os.makedirs("data/logs", exist_ok=True)
@@ -30,15 +30,15 @@ if not auth_logger.handlers:
     auth_logger.addHandler(file_handler)
 
 
-def get_cookie_manager():
-    """Retourne le gestionnaire de cookies.
+def get_local_storage():
+    """Retourne l'instance de localStorage.
 
-    Note: CookieManager est stocké dans session_state pour éviter les erreurs de clés dupliquées.
-    Streamlit exige qu'un seul CookieManager soit créé par session pour éviter les conflits de clés.
+    localStorage est persistant et survit aux rafraîchissements de page,
+    contrairement aux cookies qui ont des problèmes de timing avec Streamlit.
     """
-    if 'cookie_manager' not in st.session_state:
-        st.session_state.cookie_manager = stx.CookieManager()
-    return st.session_state.cookie_manager
+    if 'local_storage' not in st.session_state:
+        st.session_state.local_storage = LocalStorage()
+    return st.session_state.local_storage
 
 
 def _hash_password(password: str) -> str:
@@ -90,10 +90,10 @@ def _simple_auth(t):
                 st.session_state.user_info = user_info
                 st.session_state.persistent_session_id = session_id
 
-                # Sauvegarder le session_id dans un cookie (24h)
-                cookie_manager = get_cookie_manager()
-                cookie_manager.set('auth_session_id', session_id, max_age=86400)  # 24 heures
-                auth_logger.debug(f"Cookie auth_session_id défini avec session_id: {session_id}")
+                # Sauvegarder le session_id dans localStorage
+                local_storage = get_local_storage()
+                local_storage.setItem('auth_session_id', session_id)
+                auth_logger.debug(f"localStorage auth_session_id défini avec session_id: {session_id}")
 
                 st.rerun()
             else:
@@ -213,10 +213,10 @@ def _oidc_auth(t):
                     st.session_state.user_info = user_data
                     st.session_state.persistent_session_id = session_id
 
-                    # Sauvegarder le session_id dans un cookie (24h)
-                    cookie_manager = get_cookie_manager()
-                    cookie_manager.set('auth_session_id', session_id, max_age=86400)  # 24 heures
-                    auth_logger.debug(f"Cookie auth_session_id défini avec session_id: {session_id}")
+                    # Sauvegarder le session_id dans localStorage
+                    local_storage = get_local_storage()
+                    local_storage.setItem('auth_session_id', session_id)
+                    auth_logger.debug(f"localStorage auth_session_id défini avec session_id: {session_id}")
 
                     auth_logger.info(f"OIDC login SUCCESS - email: {user_email}")
 
@@ -415,10 +415,10 @@ def _oauth_auth(provider: str, t):
         st.session_state.user_info = user_info
         st.session_state.persistent_session_id = session_id
 
-        # Sauvegarder le session_id dans un cookie (24h)
-        cookie_manager = get_cookie_manager()
-        cookie_manager.set('auth_session_id', session_id, max_age=86400)  # 24 heures
-        auth_logger.debug(f"Cookie auth_session_id défini avec session_id: {session_id}")
+        # Sauvegarder le session_id dans localStorage
+        local_storage = get_local_storage()
+        local_storage.setItem('auth_session_id', session_id)
+        auth_logger.debug(f"localStorage auth_session_id défini avec session_id: {session_id}")
 
         # Sauvegarder le résultat OAuth complet pour persistance
         st.session_state[f"{provider}_oauth_result"] = result
@@ -444,28 +444,15 @@ def check_authentication():
     lang = st.session_state.get('lang', 'fr')
     t = get_translator(lang)
 
-    # Récupérer le gestionnaire de sessions et de cookies
+    # Récupérer le gestionnaire de sessions et localStorage
     session_manager = get_session_manager()
-    cookie_manager = get_cookie_manager()
+    local_storage = get_local_storage()
 
-    # Récupérer le session_id depuis les cookies du navigateur
-    # CookieManager retourne un dict via la propriété .cookies
-    # Les cookies peuvent être None lors du premier chargement du composant
-    # On utilise un cache dans session_state pour éviter les pertes lors des reruns
-    session_id = None
-    if cookie_manager:
-        cookies = cookie_manager.cookies
-        if cookies and isinstance(cookies, dict):
-            session_id = cookies.get('auth_session_id')
-            # Mettre en cache le session_id s'il est valide
-            if session_id:
-                st.session_state._cached_session_id = session_id
-        elif '_cached_session_id' in st.session_state:
-            # Si les cookies ne sont pas encore chargés, utiliser le cache
-            session_id = st.session_state._cached_session_id
-            auth_logger.debug(f"Utilisation du session_id en cache (cookies non disponibles)")
-
-    auth_logger.debug(f"Cookie session_id récupéré: {session_id}")
+    # Récupérer le session_id depuis localStorage
+    # localStorage est synchrone et toujours disponible immédiatement
+    # Pas besoin de cache - localStorage survit aux rafraîchissements de page (F5)
+    session_id = local_storage.getItem('auth_session_id')
+    auth_logger.debug(f"localStorage session_id récupéré: {session_id}")
 
     if session_id:
         # Tenter de restaurer la session depuis le cache
@@ -481,9 +468,9 @@ def check_authentication():
             st.session_state.persistent_session_id = session_id
             return session_data['user_info']
         else:
-            # Session expirée, supprimer le cookie
+            # Session expirée, supprimer de localStorage
             auth_logger.warning(f"Session expirée pour session_id: {session_id}")
-            cookie_manager.delete('auth_session_id')
+            local_storage.deleteItem('auth_session_id')
 
     # Vérifier si déjà authentifié dans la session Streamlit courante
     if st.session_state.get('authenticated', False):
@@ -597,9 +584,9 @@ def check_authentication():
 
 def logout():
     """Déconnecte l'utilisateur."""
-    # Supprimer le cookie d'authentification
-    cookie_manager = get_cookie_manager()
-    cookie_manager.delete('auth_session_id')
+    # Supprimer de localStorage
+    local_storage = get_local_storage()
+    local_storage.deleteItem('auth_session_id')
 
     # Supprimer la session persistante
     if 'persistent_session_id' in st.session_state:
