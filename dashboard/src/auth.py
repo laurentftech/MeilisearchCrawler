@@ -19,7 +19,7 @@ import extra_streamlit_components as stx
 # Configuration du logging pour l'authentification
 os.makedirs("data/logs", exist_ok=True)
 auth_logger = logging.getLogger("auth")
-auth_logger.setLevel(logging.INFO)  # Niveau INFO pour les événements importants
+auth_logger.setLevel(logging.DEBUG)  # Niveau DEBUG pour diagnostiquer les problèmes de session
 
 # Handler pour fichier
 if not auth_logger.handlers:
@@ -93,6 +93,7 @@ def _simple_auth(t):
                 # Sauvegarder le session_id dans un cookie (24h)
                 cookie_manager = get_cookie_manager()
                 cookie_manager.set('auth_session_id', session_id, max_age=86400)  # 24 heures
+                auth_logger.debug(f"Cookie auth_session_id défini avec session_id: {session_id}")
 
                 st.rerun()
             else:
@@ -193,6 +194,7 @@ def _authentik_auth(t):
                     # Sauvegarder le session_id dans un cookie (24h)
                     cookie_manager = get_cookie_manager()
                     cookie_manager.set('auth_session_id', session_id, max_age=86400)  # 24 heures
+                    auth_logger.debug(f"Cookie auth_session_id défini avec session_id: {session_id}")
 
                     auth_logger.info(f"Authentik login SUCCESS - email: {user_email}")
 
@@ -394,6 +396,7 @@ def _oauth_auth(provider: str, t):
         # Sauvegarder le session_id dans un cookie (24h)
         cookie_manager = get_cookie_manager()
         cookie_manager.set('auth_session_id', session_id, max_age=86400)  # 24 heures
+        auth_logger.debug(f"Cookie auth_session_id défini avec session_id: {session_id}")
 
         # Sauvegarder le résultat OAuth complet pour persistance
         st.session_state[f"{provider}_oauth_result"] = result
@@ -424,8 +427,15 @@ def check_authentication():
     cookie_manager = get_cookie_manager()
 
     # Récupérer le session_id depuis les cookies du navigateur
-    # CookieManager retourne un dict-like object, peut être vide lors du premier chargement
-    session_id = cookie_manager.get('auth_session_id') if cookie_manager else None
+    # CookieManager retourne un dict via la propriété .cookies
+    # Les cookies peuvent être None lors du premier chargement du composant
+    session_id = None
+    if cookie_manager:
+        cookies = cookie_manager.cookies
+        if cookies and isinstance(cookies, dict):
+            session_id = cookies.get('auth_session_id')
+
+    auth_logger.debug(f"Cookie session_id récupéré: {session_id}")
 
     if session_id:
         # Tenter de restaurer la session depuis le cache
@@ -433,6 +443,7 @@ def check_authentication():
 
         if session_data:
             # Restaurer l'authentification depuis la session persistante
+            auth_logger.info(f"Session restaurée depuis cookie - email: {session_data.get('email', 'N/A')}")
             st.session_state.authenticated = True
             st.session_state.auth_method = session_data['auth_method']
             st.session_state.user_info = session_data['user_info']
@@ -441,6 +452,7 @@ def check_authentication():
             return session_data['user_info']
         else:
             # Session expirée, supprimer le cookie
+            auth_logger.warning(f"Session expirée pour session_id: {session_id}")
             cookie_manager.delete('auth_session_id')
 
     # Vérifier si déjà authentifié dans la session Streamlit courante
