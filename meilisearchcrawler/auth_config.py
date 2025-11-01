@@ -10,7 +10,7 @@ from enum import Enum
 
 class AuthProvider(Enum):
     """Fournisseurs d'authentification disponibles."""
-    AUTHENTIK = "authentik"
+    OIDC = "oidc"  # OpenID Connect générique (Pocket ID, Authentik, Keycloak, etc.)
     GOOGLE = "google"
     GITHUB = "github"
     SIMPLE = "simple"
@@ -51,9 +51,9 @@ class AuthConfig:
         """Détecte automatiquement les providers configurés."""
         providers = []
 
-        # Authentik (priorité la plus haute)
-        if self._is_authentik_configured():
-            providers.append(AuthProvider.AUTHENTIK)
+        # OIDC générique (priorité la plus haute)
+        if self._is_oidc_configured():
+            providers.append(AuthProvider.OIDC)
 
         # Google OAuth
         if self._is_google_configured():
@@ -73,12 +73,12 @@ class AuthConfig:
 
         return providers
 
-    def _is_authentik_configured(self) -> bool:
-        """Vérifie si Authentik est configuré."""
+    def _is_oidc_configured(self) -> bool:
+        """Vérifie si OIDC générique est configuré."""
         return all([
-            os.getenv("AUTHENTIK_CLIENT_ID"),
-            os.getenv("AUTHENTIK_CLIENT_SECRET"),
-            os.getenv("AUTHENTIK_DOMAIN")
+            os.getenv("OIDC_CLIENT_ID"),
+            os.getenv("OIDC_CLIENT_SECRET"),
+            os.getenv("OIDC_ISSUER")
         ])
 
     def _is_google_configured(self) -> bool:
@@ -113,27 +113,37 @@ class AuthConfig:
         """Vérifie si un provider est activé."""
         return provider in self.enabled_providers
 
-    # --- Configuration Authentik ---
+    # --- Configuration OIDC (OpenID Connect) ---
 
-    def get_authentik_config(self) -> Optional[Dict[str, str]]:
-        """Retourne la configuration Authentik."""
-        if not self.has_provider(AuthProvider.AUTHENTIK):
+    def get_oidc_config(self) -> Optional[Dict[str, str]]:
+        """Retourne la configuration OIDC générique avec auto-discovery."""
+        if not self.has_provider(AuthProvider.OIDC):
             return None
 
-        domain = os.getenv("AUTHENTIK_DOMAIN", "").strip()
+        issuer = os.getenv("OIDC_ISSUER", "").strip().rstrip("/")
 
-        # Nettoyer le domaine (enlever les slashes et protocole)
-        domain = domain.rstrip("/").replace("https://", "").replace("http://", "")
+        # Support pour discovery automatique ou configuration manuelle
+        authorize_url = os.getenv("OIDC_AUTHORIZE_URL", "")
+        token_url = os.getenv("OIDC_TOKEN_URL", "")
+        userinfo_url = os.getenv("OIDC_USERINFO_URL", "")
+
+        # Si les endpoints ne sont pas fournis, utiliser le discovery endpoint standard
+        if not authorize_url or not token_url:
+            # Les endpoints seront découverts via /.well-known/openid-configuration
+            discovery_url = f"{issuer}/.well-known/openid-configuration"
+        else:
+            discovery_url = None
 
         return {
-            "client_id": os.getenv("AUTHENTIK_CLIENT_ID", ""),
-            "client_secret": os.getenv("AUTHENTIK_CLIENT_SECRET", ""),
-            "domain": domain,
-            "server_metadata_url": f"https://{domain}/application/o/{os.getenv('AUTHENTIK_APP_SLUG', 'kidsearch')}/.well-known/openid-configuration",
-            "authorize_url": f"https://{domain}/application/o/authorize/",
-            "token_url": f"https://{domain}/application/o/token/",
-            "userinfo_url": f"https://{domain}/application/o/userinfo/",
-            "scopes": os.getenv("AUTHENTIK_SCOPES", "openid profile email").split(),
+            "client_id": os.getenv("OIDC_CLIENT_ID", ""),
+            "client_secret": os.getenv("OIDC_CLIENT_SECRET", ""),
+            "issuer": issuer,
+            "discovery_url": discovery_url,
+            "authorize_url": authorize_url,  # Optionnel si discovery_url fourni
+            "token_url": token_url,  # Optionnel si discovery_url fourni
+            "userinfo_url": userinfo_url,  # Optionnel si discovery_url fourni
+            "scopes": os.getenv("OIDC_SCOPES", "openid profile email").split(),
+            "redirect_uri": os.getenv("OIDC_REDIRECT_URI", "http://localhost:8501/"),
         }
 
     # --- Configuration Google OAuth ---

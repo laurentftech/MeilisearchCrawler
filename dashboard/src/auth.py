@@ -103,20 +103,40 @@ def _simple_auth(t):
     st.stop()
 
 
-def _authentik_auth(t):
+def _oidc_auth(t):
     """
-    Authentification via Authentik (OpenID Connect).
+    Authentification via OpenID Connect (OIDC) générique.
+    Compatible avec Pocket ID, Authentik, Keycloak, et tout provider OIDC standard.
 
     Args:
         t: Traducteur pour les messages
     """
     auth_config = get_auth_config()
-    config = auth_config.get_authentik_config()
+    config = auth_config.get_oidc_config()
 
     if not config:
-        st.error("Authentik authentication is not configured.")
-        st.info("Please set AUTHENTIK_DOMAIN, AUTHENTIK_CLIENT_ID, and AUTHENTIK_CLIENT_SECRET in your .env file.")
+        st.error("OIDC authentication is not configured.")
+        st.info("Please set OIDC_ISSUER, OIDC_CLIENT_ID, and OIDC_CLIENT_SECRET in your .env file.")
         st.stop()
+
+    # Si discovery_url est fourni, récupérer les endpoints automatiquement
+    if config.get("discovery_url") and not config.get("authorize_url"):
+        try:
+            import requests
+            discovery_response = requests.get(config["discovery_url"], timeout=5)
+            if discovery_response.status_code == 200:
+                discovery_data = discovery_response.json()
+                config["authorize_url"] = discovery_data.get("authorization_endpoint", "")
+                config["token_url"] = discovery_data.get("token_endpoint", "")
+                config["userinfo_url"] = discovery_data.get("userinfo_endpoint", "")
+                auth_logger.debug(f"OIDC endpoints discovered from {config['discovery_url']}")
+            else:
+                st.error(f"Failed to fetch OIDC discovery document: {discovery_response.status_code}")
+                st.stop()
+        except Exception as e:
+            st.error(f"Error during OIDC discovery: {str(e)}")
+            st.info("You can manually set OIDC_AUTHORIZE_URL, OIDC_TOKEN_URL, and OIDC_USERINFO_URL in your .env file.")
+            st.stop()
 
     # Gérer le callback OAuth
     query_params = st.query_params
@@ -126,8 +146,10 @@ def _authentik_auth(t):
         code = query_params["code"]
 
         try:
+            import requests
+
             # Préparer la redirection URI
-            redirect_uri = os.getenv("AUTHENTIK_REDIRECT_URI", st.session_state.get("redirect_uri", "http://localhost:8501/"))
+            redirect_uri = config.get("redirect_uri", st.session_state.get("redirect_uri", "http://localhost:8501/"))
 
             # Échanger le code contre un token
             token_response = requests.post(
@@ -157,11 +179,11 @@ def _authentik_auth(t):
                     user_info = userinfo_response.json()
                     user_email = user_info.get("email", "")
 
-                    auth_logger.info(f"Authentik login attempt - email: {user_email}")
+                    auth_logger.info(f"OIDC login attempt - email: {user_email}")
 
                     # Vérifier si l'email est autorisé
                     if not auth_config.is_email_allowed(user_email):
-                        auth_logger.warning(f"Authentik access DENIED - email: {user_email} - not in ALLOWED_EMAILS")
+                        auth_logger.warning(f"OIDC access DENIED - email: {user_email} - not in ALLOWED_EMAILS")
                         st.error(f"🚫 {t('access_denied')}")
                         st.warning(f"{t('email_not_authorized')}: {user_email}")
                         st.info(t('contact_admin'))
@@ -179,13 +201,13 @@ def _authentik_auth(t):
                     session_id = session_manager.create_session(
                         email=user_email,
                         user_info=user_data,
-                        auth_method="authentik",
+                        auth_method="oidc",
                         token={"access_token": access_token, "id_token": id_token}
                     )
 
                     # Sauvegarder dans la session
                     st.session_state.authenticated = True
-                    st.session_state.auth_method = "authentik"
+                    st.session_state.auth_method = "oidc"
                     st.session_state.oauth_token = access_token
                     st.session_state.id_token = id_token
                     st.session_state.user_info = user_data
@@ -196,7 +218,7 @@ def _authentik_auth(t):
                     cookie_manager.set('auth_session_id', session_id, max_age=86400)  # 24 heures
                     auth_logger.debug(f"Cookie auth_session_id défini avec session_id: {session_id}")
 
-                    auth_logger.info(f"Authentik login SUCCESS - email: {user_email}")
+                    auth_logger.info(f"OIDC login SUCCESS - email: {user_email}")
 
                     # Nettoyer les query params et rediriger
                     st.query_params.clear()
@@ -217,7 +239,7 @@ def _authentik_auth(t):
     st.title(f"🔒 {t('auth_required')}")
     st.markdown(t('please_log_in'))
 
-    redirect_uri = os.getenv("AUTHENTIK_REDIRECT_URI", "http://localhost:8501/")
+    redirect_uri = config.get("redirect_uri", "http://localhost:8501/")
     st.session_state.redirect_uri = redirect_uri
 
     # Construire l'URL d'autorisation
@@ -235,7 +257,7 @@ def _authentik_auth(t):
         f"""
         <a href="{auth_url}" target="_self">
             <button style="
-                background-color: #ee0a84;
+                background-color: #4f46e5;
                 color: white;
                 padding: 12px 24px;
                 border: none;
@@ -244,7 +266,7 @@ def _authentik_auth(t):
                 cursor: pointer;
                 width: 100%;
             ">
-                🔐 Login with Authentik
+                🔐 Login with OIDC
             </button>
         </a>
         """,
@@ -429,11 +451,19 @@ def check_authentication():
     # Récupérer le session_id depuis les cookies du navigateur
     # CookieManager retourne un dict via la propriété .cookies
     # Les cookies peuvent être None lors du premier chargement du composant
+    # On utilise un cache dans session_state pour éviter les pertes lors des reruns
     session_id = None
     if cookie_manager:
         cookies = cookie_manager.cookies
         if cookies and isinstance(cookies, dict):
             session_id = cookies.get('auth_session_id')
+            # Mettre en cache le session_id s'il est valide
+            if session_id:
+                st.session_state._cached_session_id = session_id
+        elif '_cached_session_id' in st.session_state:
+            # Si les cookies ne sont pas encore chargés, utiliser le cache
+            session_id = st.session_state._cached_session_id
+            auth_logger.debug(f"Utilisation du session_id en cache (cookies non disponibles)")
 
     auth_logger.debug(f"Cookie session_id récupéré: {session_id}")
 
@@ -483,8 +513,8 @@ def check_authentication():
         provider = providers[0]
         if provider == AuthProvider.SIMPLE:
             _simple_auth(t)
-        elif provider == AuthProvider.AUTHENTIK:
-            _authentik_auth(t)
+        elif provider == AuthProvider.OIDC:
+            _oidc_auth(t)
         elif provider == AuthProvider.GOOGLE:
             _oauth_auth("google", t)
         elif provider == AuthProvider.GITHUB:
@@ -504,14 +534,14 @@ def check_authentication():
 
     for idx, provider in enumerate(providers):
         with cols[idx]:
-            if provider == AuthProvider.AUTHENTIK:
+            if provider == AuthProvider.OIDC:
                 if st.button(
-                    "🔐 Authentik",
-                    key="btn_authentik",
+                    "🔐 OIDC",
+                    key="btn_oidc",
                     use_container_width=True,
-                    help="Login with Authentik"
+                    help="Login with OpenID Connect"
                 ):
-                    st.session_state.selected_auth_method = "authentik"
+                    st.session_state.selected_auth_method = "oidc"
                     st.rerun()
 
             elif provider == AuthProvider.GOOGLE:
@@ -557,8 +587,8 @@ def check_authentication():
 
         if selected_method == "password":
             _simple_auth(t)
-        elif selected_method == "authentik":
-            _authentik_auth(t)
+        elif selected_method == "oidc":
+            _oidc_auth(t)
         elif selected_method in ["google", "github"]:
             _oauth_auth(selected_method, t)
 
@@ -577,7 +607,7 @@ def logout():
         session_manager.delete_session(st.session_state['persistent_session_id'])
 
     # Nettoyer toutes les variables de session liées à l'authentification
-    keys_to_remove = ['authenticated', 'auth_method', 'oauth_token', 'user_info', 'selected_auth_method', 'id_token', 'redirect_uri', 'persistent_session_id']
+    keys_to_remove = ['authenticated', 'auth_method', 'oauth_token', 'user_info', 'selected_auth_method', 'id_token', 'redirect_uri', 'persistent_session_id', '_cached_session_id']
     for key in keys_to_remove:
         if key in st.session_state:
             del st.session_state[key]
@@ -616,8 +646,8 @@ def show_user_widget(t):
             if user_info.get('email'):
                 st.caption(f"📧 {user_info['email']}")
 
-            if auth_method == "authentik":
-                st.caption("🔐 " + "Connected via Authentik")
+            if auth_method == "oidc":
+                st.caption("🔐 " + "Connected via OIDC")
             elif auth_method == "google":
                 st.caption("🔵 " + t('connected_via_google'))
             elif auth_method == "github":

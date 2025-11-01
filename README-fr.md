@@ -186,12 +186,28 @@ Ce type est optimisé pour les sites utilisant le logiciel MediaWiki (comme Wiki
 
 ## 5. Authentification du Dashboard
 
-Le dashboard supporte plusieurs méthodes d'authentification pour sécuriser l'accès :
+### 🧩 Authentification KidSearch
 
-- **Authentik (OpenID Connect)**: Solution SSO d'entreprise
-- **Google OAuth**: Connexion avec comptes Google
-- **GitHub OAuth**: Connexion avec comptes GitHub
-- **Mot de passe simple**: Authentification basique par mot de passe
+KidSearch supporte nativement tout fournisseur d'identité compatible **OpenID Connect (OIDC)**, tel que :
+
+- 🔐 **Pocket ID** (recommandé pour usage self-hosted)
+- 🛡️ **Authentik** (pour environnements multi-utilisateurs)
+- 🔵 **Google OAuth** (connexion avec comptes Google)
+- ⚫ **GitHub OAuth** (connexion avec comptes GitHub)
+- 🔑 **Mot de passe simple** (authentification basique)
+
+### Configuration OIDC (Recommandé)
+
+Pour tout fournisseur OIDC standard (Pocket ID, Authentik, Keycloak, etc.), fournissez simplement les variables suivantes dans votre `.env` :
+
+```bash
+OIDC_ISSUER=https://auth.example.com
+OIDC_CLIENT_ID=votre_client_id
+OIDC_CLIENT_SECRET=votre_client_secret
+OIDC_REDIRECT_URI=http://localhost:8501/
+```
+
+Les endpoints OIDC (authorization, token, userinfo) sont découverts automatiquement via `/.well-known/openid-configuration`.
 
 ### Configuration de l'authentification OAuth
 

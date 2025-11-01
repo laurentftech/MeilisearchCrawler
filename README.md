@@ -187,12 +187,28 @@ This type is optimized for sites running on MediaWiki software (like Wikipedia, 
 
 ## 5. Dashboard Authentication
 
-The dashboard supports multiple authentication methods to secure access:
+### 🧩 KidSearch Authentication
 
-- **Authentik (OpenID Connect)**: Enterprise SSO solution
-- **Google OAuth**: Sign in with Google accounts
-- **GitHub OAuth**: Sign in with GitHub accounts
-- **Simple Password**: Basic password authentication
+KidSearch natively supports any **OpenID Connect (OIDC)** compatible identity provider, such as:
+
+- 🔐 **Pocket ID** (recommended for self-hosted usage)
+- 🛡️ **Authentik** (for multi-user environments)
+- 🔵 **Google OAuth** (sign in with Google accounts)
+- ⚫ **GitHub OAuth** (sign in with GitHub accounts)
+- 🔑 **Simple Password** (basic authentication)
+
+### OIDC Configuration (Recommended)
+
+For any standard OIDC provider (Pocket ID, Authentik, Keycloak, etc.), simply provide the following variables in your `.env`:
+
+```bash
+OIDC_ISSUER=https://auth.example.com
+OIDC_CLIENT_ID=your_client_id
+OIDC_CLIENT_SECRET=your_client_secret
+OIDC_REDIRECT_URI=http://localhost:8501/
+```
+
+OIDC endpoints (authorization, token, userinfo) are automatically discovered via `/.well-known/openid-configuration`.
 
 ### Setting up OAuth Authentication
 
